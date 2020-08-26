@@ -1,0 +1,9 @@
+<component name="libraryTable">
+  <library name="dummy">
+    <CLASSES>
+      <root url="jar://$PROJECT_DIR$/test/hotspot/jtreg/runtime/LoadClass/dummy.jar!/" />
+    </CLASSES>
+    <JAVADOC />
+    <SOURCES />
+  </library>
+</component>

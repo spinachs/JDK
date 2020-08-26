@@ -48,7 +48,7 @@
 #include "gc/shared/referencePolicy.hpp"
 #include "gc/shared/referenceProcessor.hpp"
 #include "gc/shared/referenceProcessorPhaseTimes.hpp"
-#include "gc/shared/spaceDecorator.hpp"
+#include "gc/shared/spaceDecorator.inline.hpp"
 #include "gc/shared/weakProcessor.hpp"
 #include "memory/universe.hpp"
 #include "logging/log.hpp"
@@ -193,7 +193,7 @@ bool PSMarkSweep::invoke_no_policy(bool clear_all_softrefs) {
 
     BiasedLocking::preserve_marks();
 
-    const PreGCValues pre_gc_values(heap);
+    const PreGenGCValues pre_gc_values = heap->get_pre_gc_values();
 
     allocate_stacks();
 
@@ -348,9 +348,7 @@ bool PSMarkSweep::invoke_no_policy(bool clear_all_softrefs) {
       accumulated_time()->stop();
     }
 
-    young_gen->print_used_change(pre_gc_values.young_gen_used());
-    old_gen->print_used_change(pre_gc_values.old_gen_used());
-    MetaspaceUtils::print_metaspace_change(pre_gc_values.metaspace_sizes());
+    heap->print_heap_change(pre_gc_values);
 
     // Track memory usage and detect low memory
     MemoryService::track_memory_usage();

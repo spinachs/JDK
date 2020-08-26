@@ -28,6 +28,7 @@
 #include "memory/padded.hpp"
 #include "utilities/align.hpp"
 #include "utilities/debug.hpp"
+#include "utilities/globalDefinitions.hpp"
 #include "utilities/lockFreeStack.hpp"
 #include "utilities/sizes.hpp"
 
@@ -44,9 +45,7 @@ class PtrQueueSet;
 class PtrQueue {
   friend class VMStructs;
 
-  // Noncopyable - not defined.
-  PtrQueue(const PtrQueue&);
-  PtrQueue& operator=(const PtrQueue&);
+  NONCOPYABLE(PtrQueue);
 
   // The ptr queue set to which this queue belongs.
   PtrQueueSet* const _qset;
@@ -205,13 +204,14 @@ class BufferNode {
   BufferNode() : _index(0), _next(NULL) { }
   ~BufferNode() { }
 
+  NONCOPYABLE(BufferNode);
+
   static size_t buffer_offset() {
     return offset_of(BufferNode, _buffer);
   }
 
   static BufferNode* volatile* next_ptr(BufferNode& bn) { return &bn._next; }
 
-AIX_ONLY(public:)               // xlC 12 on AIX doesn't implement C++ DR45.
   // Allocate a new BufferNode with the "buffer" having size elements.
   static BufferNode* allocate(size_t size);
 
@@ -274,6 +274,8 @@ class BufferNode::Allocator {
   void delete_list(BufferNode* list);
   bool try_transfer_pending();
 
+  NONCOPYABLE(Allocator);
+
 public:
   Allocator(const char* name, size_t buffer_size);
   ~Allocator();
@@ -296,20 +298,14 @@ public:
 class PtrQueueSet {
   BufferNode::Allocator* _allocator;
 
-  // Noncopyable - not defined.
-  PtrQueueSet(const PtrQueueSet&);
-  PtrQueueSet& operator=(const PtrQueueSet&);
+  NONCOPYABLE(PtrQueueSet);
 
 protected:
   bool _all_active;
 
   // Create an empty ptr queue set.
-  PtrQueueSet();
+  PtrQueueSet(BufferNode::Allocator* allocator);
   ~PtrQueueSet();
-
-  // Because of init-order concerns, we can't pass these as constructor
-  // arguments.
-  void initialize(BufferNode::Allocator* allocator);
 
 public:
 

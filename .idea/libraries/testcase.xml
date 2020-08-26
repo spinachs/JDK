@@ -1,0 +1,9 @@
+<component name="libraryTable">
+  <library name="testcase">
+    <CLASSES>
+      <root url="jar://$PROJECT_DIR$/test/hotspot/jtreg/runtime/LocalVariableTable/testcase.jar!/" />
+    </CLASSES>
+    <JAVADOC />
+    <SOURCES />
+  </library>
+</component>

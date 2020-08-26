@@ -84,7 +84,6 @@ class SymbolPropertyTable;
 class ProtectionDomainCacheTable;
 class ProtectionDomainCacheEntry;
 class GCTimer;
-class OopStorage;
 
 #define WK_KLASS_ENUM_NAME(kname)    kname##_knum
 
@@ -120,6 +119,7 @@ class OopStorage;
   do_klass(AccessController_klass,                      java_security_AccessController                        ) \
   do_klass(SecureClassLoader_klass,                     java_security_SecureClassLoader                       ) \
   do_klass(ClassNotFoundException_klass,                java_lang_ClassNotFoundException                      ) \
+  do_klass(Record_klass,                                java_lang_Record                                      ) \
   do_klass(NoClassDefFoundError_klass,                  java_lang_NoClassDefFoundError                        ) \
   do_klass(LinkageError_klass,                          java_lang_LinkageError                                ) \
   do_klass(ClassCastException_klass,                    java_lang_ClassCastException                          ) \
@@ -156,6 +156,7 @@ class OopStorage;
   do_klass(reflect_ConstantPool_klass,                  reflect_ConstantPool                                  ) \
   do_klass(reflect_UnsafeStaticFieldAccessorImpl_klass, reflect_UnsafeStaticFieldAccessorImpl                 ) \
   do_klass(reflect_CallerSensitive_klass,               reflect_CallerSensitive                               ) \
+  do_klass(reflect_NativeConstructorAccessorImpl_klass, reflect_NativeConstructorAccessorImpl                 ) \
                                                                                                                 \
   /* support for dynamic typing; it's OK if these are NULL in earlier JDKs */                                   \
   do_klass(DirectMethodHandle_klass,                    java_lang_invoke_DirectMethodHandle                   ) \
@@ -217,8 +218,10 @@ class OopStorage;
   /* force inline of iterators */                                                                               \
   do_klass(Iterator_klass,                              java_util_Iterator                                    ) \
                                                                                                                 \
+  /* support for records */                                                                                     \
+  do_klass(RecordComponent_klass,                       java_lang_reflect_RecordComponent                     ) \
+                                                                                                                \
   /*end*/
-
 
 class SystemDictionary : AllStatic {
   friend class BootstrapInfo;
@@ -349,7 +352,7 @@ public:
 
   // Applies "f->do_oop" to all root oops in the system dictionary.
   // If include_handles is true (the default), then the handles in the
-  // storage object returned by vm_global_oop_storage() are included.
+  // vm_global OopStorage object are included.
   static void oops_do(OopClosure* f, bool include_handles = true);
 
   // System loader lock
@@ -383,7 +386,6 @@ public:
     int limit = (int)end_id + 1;
     resolve_wk_klasses_until((WKID) limit, start_id, THREAD);
   }
-
 public:
   #define WK_KLASS_DECLARE(name, symbol) \
     static InstanceKlass* name() { return check_klass(_well_known_klasses[WK_KLASS_ENUM_NAME(name)]); } \
@@ -430,9 +432,6 @@ protected:
   }
 
 public:
-  // Tells whether ClassLoader.checkPackageAccess is present
-  static bool has_checkPackageAccess()      { return _has_checkPackageAccess; }
-
   static bool Parameter_klass_loaded()      { return WK_KLASS(reflect_Parameter_klass) != NULL; }
   static bool Class_klass_loaded()          { return WK_KLASS(Class_klass) != NULL; }
   static bool Cloneable_klass_loaded()      { return WK_KLASS(Cloneable_klass) != NULL; }
@@ -469,17 +468,17 @@ public:
   // JSR 292
   // find a java.lang.invoke.MethodHandle.invoke* method for a given signature
   // (asks Java to compute it if necessary, except in a compiler thread)
-  static methodHandle find_method_handle_invoker(Klass* klass,
-                                                 Symbol* name,
-                                                 Symbol* signature,
-                                                 Klass* accessing_klass,
-                                                 Handle *appendix_result,
-                                                 TRAPS);
+  static Method* find_method_handle_invoker(Klass* klass,
+                                            Symbol* name,
+                                            Symbol* signature,
+                                            Klass* accessing_klass,
+                                            Handle *appendix_result,
+                                            TRAPS);
   // for a given signature, find the internal MethodHandle method (linkTo* or invokeBasic)
   // (does not ask Java, since this is a low-level intrinsic defined by the JVM)
-  static methodHandle find_method_handle_intrinsic(vmIntrinsics::ID iid,
-                                                   Symbol* signature,
-                                                   TRAPS);
+  static Method* find_method_handle_intrinsic(vmIntrinsics::ID iid,
+                                              Symbol* signature,
+                                              TRAPS);
 
   // compute java_mirror (java.lang.Class instance) for a type ("I", "[[B", "LFoo;", etc.)
   // Either the accessing_klass or the CL/PD can be non-null, but not both.
@@ -565,10 +564,6 @@ public:
   // ProtectionDomain cache
   static ProtectionDomainCacheTable*   _pd_cache_table;
 
-  // VM OopStorage objects.
-  static OopStorage*             _vm_global_oop_storage;
-  static OopStorage*             _vm_weak_oop_storage;
-
 protected:
   static void validate_protection_domain(InstanceKlass* klass,
                                          Handle class_loader,
@@ -623,10 +618,6 @@ public:
     return !m->is_public() && m->method_holder() == SystemDictionary::Object_klass();
   }
 
-  static void initialize_oop_storage();
-  static OopStorage* vm_global_oop_storage();
-  static OopStorage* vm_weak_oop_storage();
-
 protected:
   // Setup link to hierarchy
   static void add_to_hierarchy(InstanceKlass* k, TRAPS);
@@ -638,21 +629,6 @@ protected:
 
   // Basic find on classes in the midst of being loaded
   static Symbol* find_placeholder(Symbol* name, ClassLoaderData* loader_data);
-
-  // Add a placeholder for a class being loaded
-  static void add_placeholder(int index,
-                              Symbol* class_name,
-                              ClassLoaderData* loader_data);
-  static void remove_placeholder(int index,
-                                 Symbol* class_name,
-                                 ClassLoaderData* loader_data);
-
-  // Performs cleanups after resolve_super_or_fail. This typically needs
-  // to be called on failure.
-  // Won't throw, but can block.
-  static void resolution_cleanups(Symbol* class_name,
-                                  ClassLoaderData* loader_data,
-                                  TRAPS);
 
   // Resolve well-known classes so they can be used like SystemDictionary::String_klass()
   static void resolve_well_known_classes(TRAPS);
@@ -674,8 +650,6 @@ protected:
 private:
   static oop  _java_system_loader;
   static oop  _java_platform_loader;
-
-  static bool _has_checkPackageAccess;
 
 public:
   static TableStatistics placeholders_statistics();

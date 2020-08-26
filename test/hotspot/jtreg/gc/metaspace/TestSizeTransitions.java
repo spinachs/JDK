@@ -25,8 +25,11 @@
 
 package gc.metaspace;
 
+import jdk.test.lib.Platform;
 import jdk.test.lib.process.ProcessTools;
 import jdk.test.lib.process.OutputAnalyzer;
+import java.util.ArrayList;
+import java.util.List;
 
 /* @test TestSizeTransitionsSerial
  * @key gc
@@ -53,15 +56,6 @@ import jdk.test.lib.process.OutputAnalyzer;
  * @library /test/lib
  * @run driver gc.metaspace.TestSizeTransitions false -XX:+UseG1GC
  * @run driver gc.metaspace.TestSizeTransitions true  -XX:+UseG1GC
- */
-
-/* @test TestSizeTransitionsCMS
- * @key gc
- * @requires vm.gc.ConcMarkSweep
- * @summary Tests that the metaspace size transition logging is done correctly.
- * @library /test/lib
- * @run driver gc.metaspace.TestSizeTransitions false -XX:+UseConcMarkSweepGC
- * @run driver gc.metaspace.TestSizeTransitions true  -XX:+UseConcMarkSweepGC
  */
 
 public class TestSizeTransitions {
@@ -104,22 +98,31 @@ public class TestSizeTransitions {
       throw new RuntimeException("wrong number of args: " + args.length);
     }
 
+    final boolean hasCoops = Platform.is64bit();
     final boolean useCoops = Boolean.parseBoolean(args[0]);
     final String gcArg = args[1];
-    final String[] jvmArgs = {
-      useCoops ? "-XX:+UseCompressedOops" : "-XX:-UseCompressedOops",
-      gcArg,
-      "-Xmx256m",
-      "-Xlog:gc,gc+metaspace=info",
-      TestSizeTransitions.Run.class.getName()
-    };
+
+    if (!hasCoops && useCoops) {
+       // No need to run this configuration.
+       System.out.println("Skipping test.");
+       return;
+    }
+
+    List<String> jvmArgs = new ArrayList<>();
+    if (hasCoops) {
+      jvmArgs.add(useCoops ? "-XX:+UseCompressedOops" : "-XX:-UseCompressedOops");
+    }
+    jvmArgs.add(gcArg);
+    jvmArgs.add("-Xmx256m");
+    jvmArgs.add("-Xlog:gc,gc+metaspace=info");
+    jvmArgs.add(TestSizeTransitions.Run.class.getName());
 
     System.out.println("JVM args:");
     for (String a : jvmArgs) {
       System.out.println("  " + a);
     }
 
-    final ProcessBuilder pb = ProcessTools.createJavaProcessBuilder(jvmArgs);
+    final ProcessBuilder pb = ProcessTools.createJavaProcessBuilder(jvmArgs.toArray(new String[0]));
     final OutputAnalyzer output = new OutputAnalyzer(pb.start());
     System.out.println(output.getStdout());
     output.shouldHaveExitValue(0);

@@ -76,23 +76,22 @@ public class MitigateExceedingMaxOopMapStackOffsetTest extends LIRTest {
             // Place reference slots at top and bottom of virtual frame
             // with primitive slots in the middle. This tests that slot
             // partitioning works.
+            AllocatableValue srcObject = gen.emitLoadConstant(objectLirKind, objectConstant);
             for (int i = 0; i < numReferenceSlots / 2; i++) {
-                AllocatableValue src = gen.emitLoadConstant(objectLirKind, objectConstant);
                 VirtualStackSlot slot = frameMapBuilder.allocateSpillSlot(objectLirKind);
                 slotList.add(slot);
-                gen.emitMove(slot, src);
+                gen.emitMove(slot, srcObject);
             }
+            AllocatableValue srcPrimitive = gen.emitLoadConstant(objectLirKind, primitiveConstant);
             for (int i = 0; i < numPrimitiveSlots; i++) {
-                AllocatableValue src = gen.emitLoadConstant(objectLirKind, primitiveConstant);
                 VirtualStackSlot slot = frameMapBuilder.allocateSpillSlot(primitiveLirKind);
                 slotList.add(slot);
-                gen.emitMove(slot, src);
+                gen.emitMove(slot, srcPrimitive);
             }
             for (int i = numReferenceSlots / 2; i < numReferenceSlots; i++) {
-                AllocatableValue src = gen.emitLoadConstant(objectLirKind, objectConstant);
                 VirtualStackSlot slot = frameMapBuilder.allocateSpillSlot(objectLirKind);
                 slotList.add(slot);
-                gen.emitMove(slot, src);
+                gen.emitMove(slot, srcObject);
             }
             slots = slotList.toArray(new AllocatableValue[slotList.size()]);
         }
@@ -153,7 +152,7 @@ public class MitigateExceedingMaxOopMapStackOffsetTest extends LIRTest {
     }
 
     @Test
-    public void runStackObjects() throws Throwable {
+    public void runStackObjects() {
         int max = ((HotSpotBackend) getBackend()).getRuntime().getVMConfig().maxOopMapStackOffset;
         Assume.assumeFalse("no limit on oop map size", max == Integer.MAX_VALUE);
         numPrimitiveSlots = (max / 8) * 2;

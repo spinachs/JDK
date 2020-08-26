@@ -1,0 +1,10 @@
+<component name="libraryTable">
+  <library name="classFileParserBug">
+    <CLASSES>
+      <root url="jar://$PROJECT_DIR$/test/hotspot/jtreg/runtime/classFileParserBug/test.jar!/" />
+      <root url="jar://$PROJECT_DIR$/test/hotspot/jtreg/runtime/classFileParserBug/emptynumbootstrapmethods.jar!/" />
+    </CLASSES>
+    <JAVADOC />
+    <SOURCES />
+  </library>
+</component>

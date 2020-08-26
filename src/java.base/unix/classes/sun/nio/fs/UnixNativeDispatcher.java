@@ -33,7 +33,7 @@ class UnixNativeDispatcher {
     protected UnixNativeDispatcher() { }
 
     // returns a NativeBuffer containing the given path
-    private static NativeBuffer copyToNativeBuffer(UnixPath path) {
+    static NativeBuffer copyToNativeBuffer(UnixPath path) {
         byte[] cstr = path.getByteArrayForSysCalls();
         int size = cstr.length + 1;
         NativeBuffer buffer = NativeBuffers.getNativeBufferFromCache(size);
@@ -117,6 +117,16 @@ class UnixNativeDispatcher {
      * fclose(FILE* stream)
      */
     static native void fclose(long stream) throws UnixException;
+
+    /**
+     * void rewind(FILE* stream);
+     */
+    static native void rewind(long stream) throws UnixException;
+
+    /**
+     * ssize_t getline(char **lineptr, size_t *n, FILE *stream);
+     */
+    static native int getlinelen(long stream) throws UnixException;
 
     /**
      * link(const char* existing, const char* new)
@@ -419,6 +429,11 @@ class UnixNativeDispatcher {
     static native void futimes(int fd, long times0, long times1) throws UnixException;
 
     /**
+     * futimens(int fildes, const struct timespec times[2])
+     */
+    static native void futimens(int fd, long times0, long times1) throws UnixException;
+
+    /**
      * lutimes(const char* path, const struct timeval times[2])
      */
     static void lutimes(UnixPath path, long times0, long times1)
@@ -593,7 +608,8 @@ class UnixNativeDispatcher {
      */
     private static final int SUPPORTS_OPENAT        = 1 << 1;  // syscalls
     private static final int SUPPORTS_FUTIMES       = 1 << 2;
-    private static final int SUPPORTS_LUTIMES       = 1 << 4;
+    private static final int SUPPORTS_FUTIMENS      = 1 << 4;
+    private static final int SUPPORTS_LUTIMES       = 1 << 8;
     private static final int SUPPORTS_BIRTHTIME     = 1 << 16; // other features
     private static final int capabilities;
 
@@ -609,6 +625,13 @@ class UnixNativeDispatcher {
      */
     static boolean futimesSupported() {
         return (capabilities & SUPPORTS_FUTIMES) != 0;
+    }
+
+    /**
+     * Supports futimens
+     */
+    static boolean futimensSupported() {
+        return (capabilities & SUPPORTS_FUTIMENS) != 0;
     }
 
     /**

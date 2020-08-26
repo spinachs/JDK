@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<module type="JAVA_MODULE" version="4">
+  <component name="NewModuleRootManager" inherit-compiler-output="true">
+    <exclude-output />
+    <content url="file://$MODULE_DIR$">
+      <sourceFolder url="file://$MODULE_DIR$/common" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/differentLE" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/duplicateLE" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/duplicateParentLE" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/itableICCE" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/itableLdrConstraint" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/ldrCnstrFldMsg" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/vtableAME" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/vtableLdrConstraint" isTestSource="false" />
+    </content>
+    <orderEntry type="inheritedJdk" />
+    <orderEntry type="sourceFolder" forTests="false" />
+    <orderEntry type="library" name="golden" level="project" />
+    <orderEntry type="module" module-name="windows4" />
+    <orderEntry type="module" module-name="unix4" />
+  </component>
+</module>
