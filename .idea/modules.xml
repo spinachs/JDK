@@ -2,7 +2,6 @@
 <project version="4">
   <component name="ProjectModuleManager">
     <modules>
-      <module fileurl="file://$PROJECT_DIR$/.idea/.idea.iml" filepath="$PROJECT_DIR$/.idea/.idea.iml" />
       <module fileurl="file://$PROJECT_DIR$/test/jdk/sun/awt/AppContext/AppContext.iml" filepath="$PROJECT_DIR$/test/jdk/sun/awt/AppContext/AppContext.iml" />
       <module fileurl="file://$PROJECT_DIR$/src/utils/IdealGraphVisualizer/BatikSVGProxy/BatikSVGProxy.iml" filepath="$PROJECT_DIR$/src/utils/IdealGraphVisualizer/BatikSVGProxy/BatikSVGProxy.iml" />
       <module fileurl="file://$PROJECT_DIR$/src/utils/IdealGraphVisualizer/Bytecodes/Bytecodes.iml" filepath="$PROJECT_DIR$/src/utils/IdealGraphVisualizer/Bytecodes/Bytecodes.iml" />
@@ -81,6 +80,7 @@
       <module fileurl="file://$PROJECT_DIR$/src/jdk.crypto.cryptoki/jdk.crypto.cryptoki.iml" filepath="$PROJECT_DIR$/src/jdk.crypto.cryptoki/jdk.crypto.cryptoki.iml" />
       <module fileurl="file://$PROJECT_DIR$/src/jdk.crypto.ec/jdk.crypto.ec.iml" filepath="$PROJECT_DIR$/src/jdk.crypto.ec/jdk.crypto.ec.iml" />
       <module fileurl="file://$PROJECT_DIR$/src/jdk.crypto.mscapi/jdk.crypto.mscapi.iml" filepath="$PROJECT_DIR$/src/jdk.crypto.mscapi/jdk.crypto.mscapi.iml" />
+      <module fileurl="file://$PROJECT_DIR$/src/jdk.crypto.ucrypto/jdk.crypto.ucrypto.iml" filepath="$PROJECT_DIR$/src/jdk.crypto.ucrypto/jdk.crypto.ucrypto.iml" />
       <module fileurl="file://$PROJECT_DIR$/src/jdk.dynalink/jdk.dynalink.iml" filepath="$PROJECT_DIR$/src/jdk.dynalink/jdk.dynalink.iml" />
       <module fileurl="file://$PROJECT_DIR$/src/jdk.editpad/jdk.editpad.iml" filepath="$PROJECT_DIR$/src/jdk.editpad/jdk.editpad.iml" />
       <module fileurl="file://$PROJECT_DIR$/src/jdk.hotspot.agent/jdk.hotspot.agent.iml" filepath="$PROJECT_DIR$/src/jdk.hotspot.agent/jdk.hotspot.agent.iml" />

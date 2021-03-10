@@ -30,7 +30,16 @@
             <id>LintAndroid</id>
           </State>
           <State>
+            <id>Maven</id>
+          </State>
+          <State>
+            <id>MavenMigrationKotlin</id>
+          </State>
+          <State>
             <id>MigrationKotlin</id>
+          </State>
+          <State>
+            <id>OSGi</id>
           </State>
           <State>
             <id>PerformanceLintAndroid</id>
