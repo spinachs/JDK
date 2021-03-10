@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2017, 2019, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2017, 2021, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -25,8 +25,8 @@
  * @test
  * @bug 8231827
  * @summary Basic tests for bindings from instanceof
- * @compile --enable-preview -source ${jdk.version} BindingsTest1.java
- * @run main/othervm --enable-preview BindingsTest1
+ * @compile BindingsTest1.java
+ * @run main BindingsTest1
  */
 
 public class BindingsTest1 {
@@ -185,9 +185,73 @@ public class BindingsTest1 {
             String s2 = s;
         }
 
+        if (o1 instanceof final String s) {
+            Runnable r1 = new Runnable() {
+                @Override
+                public void run() {
+                    s.length();
+                }
+            };
+            r1.run();
+            Runnable r2 = () -> {
+                s.length();
+            };
+            r2.run();
+            String s2 = s;
+        }
+
         boolean result = (o1 instanceof String a1) ? (o1 instanceof String a2) : (!(o1 instanceof String a3));
         boolean result2 = (o1 instanceof String a1) ? (o1 instanceof String a2) : (!(switch (0) { default -> false; }));
 
+        //binding in an expression lambda:
+        if (!((VoidPredicate) () -> o1 instanceof String str && !str.isEmpty()).get()) {
+            throw new AssertionError();
+        }
+
+        //binding in an block lambda:
+        if (!((VoidPredicate) () -> o1 instanceof String str && !str.isEmpty()).get()) {
+            throw new AssertionError();
+        }
+
+        //binding in an anonymous class:
+        if (!new VoidPredicate() { public boolean get() { return o1 instanceof String str && !str.isEmpty();} }.get()) {
+            throw new AssertionError();
+        }
+
+        if (!switch (i) {
+            default:
+                if (!(o1 instanceof String str)) {
+                    yield false;
+                }
+                if (str.isEmpty()) {
+                    yield true;
+                }
+                yield true;
+            }) {
+            throw new AssertionError();
+        }
+
+        //binding in an anonymous class:
+        if (!(invokeOnce("") instanceof String s)) {
+            throw new AssertionError();
+        }
+
         System.out.println("BindingsTest1 complete");
+    }
+
+    interface VoidPredicate {
+        public boolean get();
+    }
+    static boolean id(boolean b) {
+        return b;
+    }
+    private static boolean invoked;
+    static Object invokeOnce(Object val) {
+        if (invoked) {
+            throw new IllegalStateException();
+        } else {
+            invoked = true;
+            return val;
+        }
     }
 }

@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2013, 2019, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2013, 2021, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -24,17 +24,22 @@
 
 #include "precompiled.hpp"
 #include "gc/g1/g1CollectedHeap.inline.hpp"
+#include "gc/g1/g1GCParPhaseTimesTracker.hpp"
 #include "gc/g1/g1GCPhaseTimes.hpp"
 #include "gc/g1/g1HotCardCache.hpp"
 #include "gc/g1/g1ParScanThreadState.inline.hpp"
 #include "gc/g1/g1StringDedup.hpp"
 #include "gc/shared/gcTimer.hpp"
+#include "gc/shared/oopStorage.hpp"
+#include "gc/shared/oopStorageSet.hpp"
+#include "gc/shared/tlab_globals.hpp"
 #include "gc/shared/workerDataArray.inline.hpp"
 #include "memory/resourceArea.hpp"
 #include "logging/log.hpp"
 #include "logging/logStream.hpp"
 #include "runtime/timer.hpp"
 #include "runtime/os.hpp"
+#include "utilities/enumIterator.hpp"
 #include "utilities/macros.hpp"
 
 static const char* indent(uint level) {
@@ -52,54 +57,58 @@ G1GCPhaseTimes::G1GCPhaseTimes(STWGCTimer* gc_timer, uint max_gc_threads) :
 {
   assert(max_gc_threads > 0, "Must have some GC threads");
 
-  _gc_par_phases[GCWorkerStart] = new WorkerDataArray<double>("GC Worker Start (ms):", max_gc_threads);
-  _gc_par_phases[ExtRootScan] = new WorkerDataArray<double>("Ext Root Scanning (ms):", max_gc_threads);
+  _gc_par_phases[GCWorkerStart] = new WorkerDataArray<double>("GCWorkerStart", "GC Worker Start (ms):", max_gc_threads);
+  _gc_par_phases[ExtRootScan] = new WorkerDataArray<double>("ExtRootScan", "Ext Root Scanning (ms):", max_gc_threads);
 
   // Root scanning phases
-  _gc_par_phases[ThreadRoots] = new WorkerDataArray<double>("Thread Roots (ms):", max_gc_threads);
-  _gc_par_phases[UniverseRoots] = new WorkerDataArray<double>("Universe Roots (ms):", max_gc_threads);
-  _gc_par_phases[JNIRoots] = new WorkerDataArray<double>("JNI Handles Roots (ms):", max_gc_threads);
-  _gc_par_phases[ObjectSynchronizerRoots] = new WorkerDataArray<double>("ObjectSynchronizer Roots (ms):", max_gc_threads);
-  _gc_par_phases[ManagementRoots] = new WorkerDataArray<double>("Management Roots (ms):", max_gc_threads);
-  _gc_par_phases[SystemDictionaryRoots] = new WorkerDataArray<double>("SystemDictionary Roots (ms):", max_gc_threads);
-  _gc_par_phases[CLDGRoots] = new WorkerDataArray<double>("CLDG Roots (ms):", max_gc_threads);
-  _gc_par_phases[JVMTIRoots] = new WorkerDataArray<double>("JVMTI Roots (ms):", max_gc_threads);
-  AOT_ONLY(_gc_par_phases[AOTCodeRoots] = new WorkerDataArray<double>("AOT Root Scan (ms):", max_gc_threads);)
-  _gc_par_phases[CMRefRoots] = new WorkerDataArray<double>("CM RefProcessor Roots (ms):", max_gc_threads);
+  _gc_par_phases[ThreadRoots] = new WorkerDataArray<double>("ThreadRoots", "Thread Roots (ms):", max_gc_threads);
+  _gc_par_phases[CLDGRoots] = new WorkerDataArray<double>("CLDGRoots", "CLDG Roots (ms):", max_gc_threads);
+  AOT_ONLY(_gc_par_phases[AOTCodeRoots] = new WorkerDataArray<double>("AOTCodeRoots", "AOT Root Scan (ms):", max_gc_threads);)
+  _gc_par_phases[CMRefRoots] = new WorkerDataArray<double>("CMRefRoots", "CM RefProcessor Roots (ms):", max_gc_threads);
 
-  _gc_par_phases[MergeER] = new WorkerDataArray<double>("Eager Reclaim (ms):", max_gc_threads);
+  for (auto id : EnumRange<OopStorageSet::StrongId>()) {
+    GCParPhases phase = strong_oopstorage_phase(id);
+    const char* phase_name_postfix = " Roots (ms):";
+    const char* storage_name = OopStorageSet::storage(id)->name();
+    char* oop_storage_phase_name = NEW_C_HEAP_ARRAY(char, strlen(phase_name_postfix) + strlen(storage_name) + 1, mtGC);
+    strcpy(oop_storage_phase_name, storage_name);
+    strcat(oop_storage_phase_name, phase_name_postfix);
+    _gc_par_phases[phase] = new WorkerDataArray<double>(storage_name, oop_storage_phase_name, max_gc_threads);
+  }
 
-  _gc_par_phases[MergeRS] = new WorkerDataArray<double>("Remembered Sets (ms):", max_gc_threads);
+  _gc_par_phases[MergeER] = new WorkerDataArray<double>("MergeER", "Eager Reclaim (ms):", max_gc_threads);
+
+  _gc_par_phases[MergeRS] = new WorkerDataArray<double>("MergeRS", "Remembered Sets (ms):", max_gc_threads);
   _gc_par_phases[MergeRS]->create_thread_work_items("Merged Sparse:", MergeRSMergedSparse);
   _gc_par_phases[MergeRS]->create_thread_work_items("Merged Fine:", MergeRSMergedFine);
   _gc_par_phases[MergeRS]->create_thread_work_items("Merged Coarse:", MergeRSMergedCoarse);
   _gc_par_phases[MergeRS]->create_thread_work_items("Dirty Cards:", MergeRSDirtyCards);
 
-  _gc_par_phases[OptMergeRS] = new WorkerDataArray<double>("Optional Remembered Sets (ms):", max_gc_threads);
+  _gc_par_phases[OptMergeRS] = new WorkerDataArray<double>("OptMergeRS", "Optional Remembered Sets (ms):", max_gc_threads);
   _gc_par_phases[OptMergeRS]->create_thread_work_items("Merged Sparse:", MergeRSMergedSparse);
   _gc_par_phases[OptMergeRS]->create_thread_work_items("Merged Fine:", MergeRSMergedFine);
   _gc_par_phases[OptMergeRS]->create_thread_work_items("Merged Coarse:", MergeRSMergedCoarse);
   _gc_par_phases[OptMergeRS]->create_thread_work_items("Dirty Cards:", MergeRSDirtyCards);
 
-  _gc_par_phases[MergeLB] = new WorkerDataArray<double>("Log Buffers (ms):", max_gc_threads);
+  _gc_par_phases[MergeLB] = new WorkerDataArray<double>("MergeLB", "Log Buffers (ms):", max_gc_threads);
   if (G1HotCardCache::default_use_cache()) {
-    _gc_par_phases[MergeHCC] = new WorkerDataArray<double>("Hot Card Cache (ms):", max_gc_threads);
+    _gc_par_phases[MergeHCC] = new WorkerDataArray<double>("MergeHCC", "Hot Card Cache (ms):", max_gc_threads);
     _gc_par_phases[MergeHCC]->create_thread_work_items("Dirty Cards:", MergeHCCDirtyCards);
     _gc_par_phases[MergeHCC]->create_thread_work_items("Skipped Cards:", MergeHCCSkippedCards);
   } else {
     _gc_par_phases[MergeHCC] = NULL;
   }
-  _gc_par_phases[ScanHR] = new WorkerDataArray<double>("Scan Heap Roots (ms):", max_gc_threads);
-  _gc_par_phases[OptScanHR] = new WorkerDataArray<double>("Optional Scan Heap Roots (ms):", max_gc_threads);
-  _gc_par_phases[CodeRoots] = new WorkerDataArray<double>("Code Root Scan (ms):", max_gc_threads);
-  _gc_par_phases[OptCodeRoots] = new WorkerDataArray<double>("Optional Code Root Scan (ms):", max_gc_threads);
-  _gc_par_phases[ObjCopy] = new WorkerDataArray<double>("Object Copy (ms):", max_gc_threads);
-  _gc_par_phases[OptObjCopy] = new WorkerDataArray<double>("Optional Object Copy (ms):", max_gc_threads);
-  _gc_par_phases[Termination] = new WorkerDataArray<double>("Termination (ms):", max_gc_threads);
-  _gc_par_phases[OptTermination] = new WorkerDataArray<double>("Optional Termination (ms):", max_gc_threads);
-  _gc_par_phases[GCWorkerTotal] = new WorkerDataArray<double>("GC Worker Total (ms):", max_gc_threads);
-  _gc_par_phases[GCWorkerEnd] = new WorkerDataArray<double>("GC Worker End (ms):", max_gc_threads);
-  _gc_par_phases[Other] = new WorkerDataArray<double>("GC Worker Other (ms):", max_gc_threads);
+  _gc_par_phases[ScanHR] = new WorkerDataArray<double>("ScanHR", "Scan Heap Roots (ms):", max_gc_threads);
+  _gc_par_phases[OptScanHR] = new WorkerDataArray<double>("OptScanHR", "Optional Scan Heap Roots (ms):", max_gc_threads);
+  _gc_par_phases[CodeRoots] = new WorkerDataArray<double>("CodeRoots", "Code Root Scan (ms):", max_gc_threads);
+  _gc_par_phases[OptCodeRoots] = new WorkerDataArray<double>("OptCodeRoots", "Optional Code Root Scan (ms):", max_gc_threads);
+  _gc_par_phases[ObjCopy] = new WorkerDataArray<double>("ObjCopy", "Object Copy (ms):", max_gc_threads);
+  _gc_par_phases[OptObjCopy] = new WorkerDataArray<double>("OptObjCopy", "Optional Object Copy (ms):", max_gc_threads);
+  _gc_par_phases[Termination] = new WorkerDataArray<double>("Termination", "Termination (ms):", max_gc_threads);
+  _gc_par_phases[OptTermination] = new WorkerDataArray<double>("OptTermination", "Optional Termination (ms):", max_gc_threads);
+  _gc_par_phases[GCWorkerTotal] = new WorkerDataArray<double>("GCWorkerTotal", "GC Worker Total (ms):", max_gc_threads);
+  _gc_par_phases[GCWorkerEnd] = new WorkerDataArray<double>("GCWorkerEnd", "GC Worker End (ms):", max_gc_threads);
+  _gc_par_phases[Other] = new WorkerDataArray<double>("Other", "GC Worker Other (ms):", max_gc_threads);
 
   _gc_par_phases[ScanHR]->create_thread_work_items("Scanned Cards:", ScanHRScannedCards);
   _gc_par_phases[ScanHR]->create_thread_work_items("Scanned Blocks:", ScanHRScannedBlocks);
@@ -114,7 +123,7 @@ G1GCPhaseTimes::G1GCPhaseTimes(STWGCTimer* gc_timer, uint max_gc_threads) :
   _gc_par_phases[MergeLB]->create_thread_work_items("Dirty Cards:", MergeLBDirtyCards);
   _gc_par_phases[MergeLB]->create_thread_work_items("Skipped Cards:", MergeLBSkippedCards);
 
-  _gc_par_phases[MergePSS] = new WorkerDataArray<double>("Merge Per-Thread State", 1 /* length */, true /* is_serial */);
+  _gc_par_phases[MergePSS] = new WorkerDataArray<double>("MergePSS", "Merge Per-Thread State", 1 /* length */, true /* is_serial */);
 
   _gc_par_phases[MergePSS]->create_thread_work_items("Copied Bytes", MergePSSCopiedBytes, max_gc_threads);
   _gc_par_phases[MergePSS]->create_thread_work_items("LAB Waste", MergePSSLABWasteBytes, max_gc_threads);
@@ -125,20 +134,20 @@ G1GCPhaseTimes::G1GCPhaseTimes(STWGCTimer* gc_timer, uint max_gc_threads) :
   _gc_par_phases[OptTermination]->create_thread_work_items("Optional Termination Attempts:");
 
   if (UseStringDeduplication) {
-    _gc_par_phases[StringDedupQueueFixup] = new WorkerDataArray<double>("Queue Fixup (ms):", max_gc_threads);
-    _gc_par_phases[StringDedupTableFixup] = new WorkerDataArray<double>("Table Fixup (ms):", max_gc_threads);
+    _gc_par_phases[StringDedupQueueFixup] = new WorkerDataArray<double>("StringDedupQueueFixup", "Queue Fixup (ms):", max_gc_threads);
+    _gc_par_phases[StringDedupTableFixup] = new WorkerDataArray<double>("StringDedupTableFixup", "Table Fixup (ms):", max_gc_threads);
   } else {
     _gc_par_phases[StringDedupQueueFixup] = NULL;
     _gc_par_phases[StringDedupTableFixup] = NULL;
   }
 
-  _gc_par_phases[RedirtyCards] = new WorkerDataArray<double>("Parallel Redirty (ms):", max_gc_threads);
+  _gc_par_phases[RedirtyCards] = new WorkerDataArray<double>("RedirtyCards", "Parallel Redirty (ms):", max_gc_threads);
   _gc_par_phases[RedirtyCards]->create_thread_work_items("Redirtied Cards:");
 
-  _gc_par_phases[ParFreeCSet] = new WorkerDataArray<double>("Parallel Free Collection Set (ms):", max_gc_threads);
-  _gc_par_phases[YoungFreeCSet] = new WorkerDataArray<double>("Young Free Collection Set (ms):", max_gc_threads);
-  _gc_par_phases[NonYoungFreeCSet] = new WorkerDataArray<double>("Non-Young Free Collection Set (ms):", max_gc_threads);
-  _gc_par_phases[RebuildFreeList] = new WorkerDataArray<double>("Parallel Rebuild Free List (ms):", max_gc_threads);
+  _gc_par_phases[ParFreeCSet] = new WorkerDataArray<double>("ParFreeCSet", "Parallel Free Collection Set (ms):", max_gc_threads);
+  _gc_par_phases[YoungFreeCSet] = new WorkerDataArray<double>("YoungFreeCSet", "Young Free Collection Set (ms):", max_gc_threads);
+  _gc_par_phases[NonYoungFreeCSet] = new WorkerDataArray<double>("NonYoungFreeCSet", "Non-Young Free Collection Set (ms):", max_gc_threads);
+  _gc_par_phases[RebuildFreeList] = new WorkerDataArray<double>("RebuildFreeList", "Parallel Rebuild Free List (ms):", max_gc_threads);
 
   reset();
 }
@@ -157,6 +166,7 @@ void G1GCPhaseTimes::reset() {
   _cur_string_deduplication_time_ms = 0.0;
   _cur_prepare_tlab_time_ms = 0.0;
   _cur_resize_tlab_time_ms = 0.0;
+  _cur_concatenate_dirty_card_logs_time_ms = 0.0;
   _cur_derived_pointer_table_update_time_ms = 0.0;
   _cur_clear_ct_time_ms = 0.0;
   _cur_expand_heap_time_ms = 0.0;
@@ -377,6 +387,8 @@ void G1GCPhaseTimes::trace_count(const char* name, size_t value) const {
 
 double G1GCPhaseTimes::print_pre_evacuate_collection_set() const {
   const double sum_ms = _root_region_scan_wait_time_ms +
+                        _cur_prepare_tlab_time_ms +
+                        _cur_concatenate_dirty_card_logs_time_ms +
                         _recorded_young_cset_choice_time_ms +
                         _recorded_non_young_cset_choice_time_ms +
                         _cur_region_register_time +
@@ -389,6 +401,7 @@ double G1GCPhaseTimes::print_pre_evacuate_collection_set() const {
     debug_time("Root Region Scan Waiting", _root_region_scan_wait_time_ms);
   }
   debug_time("Prepare TLABs", _cur_prepare_tlab_time_ms);
+  debug_time("Concatenate Dirty Card Logs", _cur_concatenate_dirty_card_logs_time_ms);
   debug_time("Choose Collection Set", (_recorded_young_cset_choice_time_ms + _recorded_non_young_cset_choice_time_ms));
   debug_time("Region Register", _cur_region_register_time);
   if (G1EagerReclaimHumongousObjects) {
@@ -477,7 +490,8 @@ double G1GCPhaseTimes::print_post_evacuate_collection_set() const {
 
   debug_time_for_reference("Reference Processing", _cur_ref_proc_time_ms);
   _ref_phase_times.print_all_references(2, false);
-  _weak_phase_times.log_print(2);
+  _weak_phase_times.log_total(2);
+  _weak_phase_times.log_subtotals(3);
 
   if (G1StringDedup::is_enabled()) {
     debug_time("String Deduplication", _cur_string_deduplication_time_ms);
@@ -548,49 +562,8 @@ void G1GCPhaseTimes::print() {
 }
 
 const char* G1GCPhaseTimes::phase_name(GCParPhases phase) {
-  static const char* names[] = {
-      "GCWorkerStart",
-      "ExtRootScan",
-      "ThreadRoots",
-      "UniverseRoots",
-      "JNIRoots",
-      "ObjectSynchronizerRoots",
-      "ManagementRoots",
-      "SystemDictionaryRoots",
-      "CLDGRoots",
-      "JVMTIRoots",
-      AOT_ONLY("AOTCodeRoots" COMMA)
-      "CMRefRoots",
-      "MergeER",
-      "MergeRS",
-      "OptMergeRS",
-      "MergeLB",
-      "MergeHCC",
-      "ScanHR",
-      "OptScanHR",
-      "CodeRoots",
-      "OptCodeRoots",
-      "ObjCopy",
-      "OptObjCopy",
-      "Termination",
-      "OptTermination",
-      "Other",
-      "GCWorkerTotal",
-      "GCWorkerEnd",
-      "StringDedupQueueFixup",
-      "StringDedupTableFixup",
-      "RedirtyCards",
-      "ParFreeCSet",
-      "YoungFreeCSet",
-      "NonYoungFreeCSet",
-      "RebuildFreeList",
-      "MergePSS"
-      //GCParPhasesSentinel only used to tell end of enum
-      };
-
-  STATIC_ASSERT(ARRAY_SIZE(names) == G1GCPhaseTimes::GCParPhasesSentinel); // GCParPhases enum and corresponding string array should have the same "length", this tries to assert it
-
-  return names[phase];
+  G1GCPhaseTimes* phase_times = G1CollectedHeap::heap()->phase_times();
+  return phase_times->_gc_par_phases[phase]->short_name();
 }
 
 G1EvacPhaseWithTrimTimeTracker::G1EvacPhaseWithTrimTimeTracker(G1ParScanThreadState* pss, Tickspan& total_time, Tickspan& trim_time) :

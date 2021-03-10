@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2005, 2019, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2005, 2020, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -30,7 +30,6 @@ import javax.lang.model.*;
 import javax.lang.model.element.*;
 import static javax.lang.model.element.ElementKind.*;
 import static javax.lang.model.element.NestingKind.*;
-import static javax.lang.model.element.ModuleElement.DirectiveKind.*;
 import static javax.lang.model.element.ModuleElement.*;
 import javax.lang.model.type.*;
 import javax.lang.model.util.*;
@@ -39,7 +38,6 @@ import java.io.PrintWriter;
 import java.io.Writer;
 import java.util.*;
 import java.util.stream.Collectors;
-import java.util.stream.Stream;
 
 
 import com.sun.tools.javac.util.DefinedBy;
@@ -57,7 +55,7 @@ import com.sun.tools.javac.util.StringUtils;
  * deletion without notice.</b>
  */
 @SupportedAnnotationTypes("*")
-@SupportedSourceVersion(SourceVersion.RELEASE_15)
+@SupportedSourceVersion(SourceVersion.RELEASE_17)
 public class PrintingProcessor extends AbstractProcessor {
     PrintWriter writer;
 
@@ -231,7 +229,7 @@ public class PrintingProcessor extends AbstractProcessor {
                     writer.print("(");
                     writer.print(e.getRecordComponents()
                                  .stream()
-                                 .map(recordDes -> recordDes.asType().toString() + " " + recordDes.getSimpleName())
+                                 .map(recordDes -> annotationsToString(recordDes) + recordDes.asType().toString() + " " + recordDes.getSimpleName())
                                  .collect(Collectors.joining(", ")));
                     writer.print(")");
                 }
@@ -248,6 +246,7 @@ public class PrintingProcessor extends AbstractProcessor {
                 }
 
                 printInterfaces(e);
+                printPermittedSubclasses(e);
             }
             writer.println(" {");
             indentation++;
@@ -449,7 +448,7 @@ public class PrintingProcessor extends AbstractProcessor {
 
         private void printModifiers(Element e) {
             ElementKind kind = e.getKind();
-            if (kind == PARAMETER) {
+            if (kind == PARAMETER || kind == RECORD_COMPONENT) {
                 // Print annotation inline
                 writer.print(annotationsToString(e));
             } else {
@@ -457,7 +456,7 @@ public class PrintingProcessor extends AbstractProcessor {
                 indent();
             }
 
-            if (kind == ENUM_CONSTANT)
+            if (kind == ENUM_CONSTANT || kind == RECORD_COMPONENT)
                 return;
 
             Set<Modifier> modifiers = new LinkedHashSet<>();
@@ -472,6 +471,7 @@ public class PrintingProcessor extends AbstractProcessor {
             case ENUM:
                 modifiers.remove(Modifier.FINAL);
                 modifiers.remove(Modifier.ABSTRACT);
+                modifiers.remove(Modifier.SEALED);
                 break;
 
             case RECORD:
@@ -599,6 +599,17 @@ public class PrintingProcessor extends AbstractProcessor {
                                  .map(TypeMirror::toString)
                                  .collect(Collectors.joining(", ")));
                 }
+            }
+        }
+
+        private void printPermittedSubclasses(TypeElement e) {
+            List<? extends TypeMirror> subtypes = e.getPermittedSubclasses();
+            if (!subtypes.isEmpty()) { // could remove this check with more complicated joining call
+                writer.print(" permits ");
+                writer.print(subtypes
+                             .stream()
+                             .map(subtype -> subtype.toString())
+                             .collect(Collectors.joining(", ")));
             }
         }
 

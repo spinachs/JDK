@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2012, 2019, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2012, 2020, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -43,6 +43,7 @@ import jdk.jfr.internal.LogLevel;
 import jdk.jfr.internal.LogTag;
 import jdk.jfr.internal.Logger;
 import jdk.jfr.internal.OldObjectSample;
+import jdk.jfr.internal.PlatformRecording;
 import jdk.jfr.internal.PrivateAccess;
 import jdk.jfr.internal.SecuritySupport.SafePath;
 import jdk.jfr.internal.Type;
@@ -68,10 +69,10 @@ final class DCmdStart extends AbstractDCmd {
      * @param disk if recording should be persisted to disk
      * @param path file path where recording data should be written
      * @param maxAge how long recording data should be kept in the disk
-     *        repository, or <code>0</code> if no limit should be set.
+     *        repository, or {@code 0} if no limit should be set.
      *
      * @param maxSize the minimum amount data to keep in the disk repository
-     *        before it is discarded, or <code>0</code> if no limit should be
+     *        before it is discarded, or {@code 0} if no limit should be
      *        set.
      *
      * @param dumpOnExit if recording should dump on exit
@@ -90,9 +91,9 @@ final class DCmdStart extends AbstractDCmd {
                     ", disk=" + disk+
                     ", filename=" + path +
                     ", maxage=" + maxAge +
-                    ", flush=" + flush +
+                    ", flush-interval=" + flush +
                     ", maxsize=" + maxSize +
-                    ", dumponexit =" + dumpOnExit +
+                    ", dumponexit=" + dumpOnExit +
                     ", path-to-gc-roots=" + pathToGcRoots);
         }
         if (name != null) {
@@ -131,7 +132,7 @@ final class DCmdStart extends AbstractDCmd {
         }
 
         if (delay != null) {
-            if (delay < 1000L * 1000L * 1000) {
+            if (delay < 1000L * 1000L * 1000L) {
                 // to avoid typo, delay shorter than 1s makes no sense.
                 throw new DCmdException("Could not start recording, delay must be at least 1 second.");
             }
@@ -186,7 +187,8 @@ final class DCmdStart extends AbstractDCmd {
         }
 
         if (flush != null) {
-            recording.setFlushInterval(Duration.ofNanos(flush));
+            PlatformRecording p = PrivateAccess.getInstance().getPlatformRecording(recording);
+            p.setFlushInterval(Duration.ofNanos(flush));
         }
 
         if (maxSize != null) {

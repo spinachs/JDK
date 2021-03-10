@@ -1,5 +1,6 @@
 /*
  * Copyright (c) 2017, 2019, Red Hat, Inc. All rights reserved.
+ * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
  * under the terms of the GNU General Public License version 2 only, as
@@ -49,7 +50,7 @@ ShenandoahStrDedupQueue::ShenandoahStrDedupQueue() :
 
 ShenandoahStrDedupQueue::~ShenandoahStrDedupQueue() {
   MonitorLocker ml(StringDedupQueue_lock, Mutex::_no_safepoint_check_flag);
-  for (size_t index = 0; index < num_queues(); index ++) {
+  for (size_t index = 0; index < num_queues_nv(); index ++) {
     release_buffers(queue_at(index));
   }
 

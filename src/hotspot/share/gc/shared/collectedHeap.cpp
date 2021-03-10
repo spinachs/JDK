@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2001, 2019, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2001, 2021, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -23,7 +23,8 @@
  */
 
 #include "precompiled.hpp"
-#include "classfile/systemDictionary.hpp"
+#include "classfile/classLoaderData.hpp"
+#include "classfile/vmClasses.hpp"
 #include "gc/shared/allocTracer.hpp"
 #include "gc/shared/barrierSet.hpp"
 #include "gc/shared/collectedHeap.hpp"
@@ -34,31 +35,57 @@
 #include "gc/shared/gcTraceTime.inline.hpp"
 #include "gc/shared/gcVMOperations.hpp"
 #include "gc/shared/gcWhen.hpp"
+#include "gc/shared/gc_globals.hpp"
 #include "gc/shared/memAllocator.hpp"
+#include "gc/shared/tlab_globals.hpp"
 #include "logging/log.hpp"
-#include "memory/metaspace.hpp"
+#include "logging/logStream.hpp"
+#include "memory/classLoaderMetaspace.hpp"
+#include "memory/metaspaceUtils.hpp"
 #include "memory/resourceArea.hpp"
 #include "memory/universe.hpp"
 #include "oops/instanceMirrorKlass.hpp"
 #include "oops/oop.inline.hpp"
 #include "runtime/handles.inline.hpp"
 #include "runtime/init.hpp"
+#include "runtime/perfData.hpp"
 #include "runtime/thread.inline.hpp"
 #include "runtime/threadSMR.hpp"
 #include "runtime/vmThread.hpp"
 #include "services/heapDumper.hpp"
 #include "utilities/align.hpp"
 #include "utilities/copy.hpp"
+#include "utilities/events.hpp"
 
 class ClassLoaderData;
 
 size_t CollectedHeap::_filler_array_max_size = 0;
+
+class GCMessage : public FormatBuffer<1024> {
+ public:
+  bool is_before;
+};
 
 template <>
 void EventLogBase<GCMessage>::print(outputStream* st, GCMessage& m) {
   st->print_cr("GC heap %s", m.is_before ? "before" : "after");
   st->print_raw(m);
 }
+
+class GCHeapLog : public EventLogBase<GCMessage> {
+ private:
+  void log_heap(CollectedHeap* heap, bool before);
+
+ public:
+  GCHeapLog() : EventLogBase<GCMessage>("GC Heap History", "gc") {}
+
+  void log_heap_before(CollectedHeap* heap) {
+    log_heap(heap, true);
+  }
+  void log_heap_after(CollectedHeap* heap) {
+    log_heap(heap, false);
+  }
+};
 
 void GCHeapLog::log_heap(CollectedHeap* heap, bool before) {
   if (!should_log()) {
@@ -123,14 +150,28 @@ MetaspaceSummary CollectedHeap::create_metaspace_summary() {
 }
 
 void CollectedHeap::print_heap_before_gc() {
-  Universe::print_heap_before_gc();
+  LogTarget(Debug, gc, heap) lt;
+  if (lt.is_enabled()) {
+    LogStream ls(lt);
+    ls.print_cr("Heap before GC invocations=%u (full %u):", total_collections(), total_full_collections());
+    ResourceMark rm;
+    print_on(&ls);
+  }
+
   if (_gc_heap_log != NULL) {
     _gc_heap_log->log_heap_before(this);
   }
 }
 
 void CollectedHeap::print_heap_after_gc() {
-  Universe::print_heap_after_gc();
+  LogTarget(Debug, gc, heap) lt;
+  if (lt.is_enabled()) {
+    LogStream ls(lt);
+    ls.print_cr("Heap after GC invocations=%u (full %u):", total_collections(), total_full_collections());
+    ResourceMark rm;
+    print_on(&ls);
+  }
+
   if (_gc_heap_log != NULL) {
     _gc_heap_log->log_heap_after(this);
   }
@@ -143,7 +184,10 @@ void CollectedHeap::print_on_error(outputStream* st) const {
   print_extended_on(st);
   st->cr();
 
-  BarrierSet::barrier_set()->print_on(st);
+  BarrierSet* bs = BarrierSet::barrier_set();
+  if (bs != NULL) {
+    bs->print_on(st);
+  }
 }
 
 void CollectedHeap::trace_heap(GCWhen::Type when, const GCTracer* gc_tracer) {
@@ -162,14 +206,8 @@ void CollectedHeap::trace_heap_after_gc(const GCTracer* gc_tracer) {
   trace_heap(GCWhen::AfterGC, gc_tracer);
 }
 
-// WhiteBox API support for concurrent collectors.  These are the
-// default implementations, for collectors which don't support this
-// feature.
-bool CollectedHeap::supports_concurrent_phase_control() const {
-  return false;
-}
-
-bool CollectedHeap::request_concurrent_phase(const char* phase) {
+// Default implementation, for collectors that don't support the feature.
+bool CollectedHeap::supports_concurrent_gc_breakpoints() const {
   return false;
 }
 
@@ -193,7 +231,10 @@ bool CollectedHeap::is_oop(oop object) const {
 
 
 CollectedHeap::CollectedHeap() :
+  _capacity_at_last_gc(0),
+  _used_at_last_gc(0),
   _is_gc_active(false),
+  _last_whole_heap_examined_time_ns(os::javaTimeNanos()),
   _total_collections(0),
   _total_full_collections(0),
   _gc_cause(GCCause::_no_gc),
@@ -232,19 +273,21 @@ CollectedHeap::CollectedHeap() :
 // heap lock is already held and that we are executing in
 // the context of the vm thread.
 void CollectedHeap::collect_as_vm_thread(GCCause::Cause cause) {
-  assert(Thread::current()->is_VM_thread(), "Precondition#1");
+  Thread* thread = Thread::current();
+  assert(thread->is_VM_thread(), "Precondition#1");
   assert(Heap_lock->is_locked(), "Precondition#2");
   GCCauseSetter gcs(this, cause);
   switch (cause) {
     case GCCause::_heap_inspection:
     case GCCause::_heap_dump:
     case GCCause::_metadata_GC_threshold : {
-      HandleMark hm;
+      HandleMark hm(thread);
       do_full_collection(false);        // don't clear all soft refs
       break;
     }
+    case GCCause::_archive_time_gc:
     case GCCause::_metadata_GC_clear_soft_refs: {
-      HandleMark hm;
+      HandleMark hm(thread);
       do_full_collection(true);         // do clear all soft refs
       break;
     }
@@ -331,6 +374,14 @@ MemoryUsage CollectedHeap::memory_usage() {
   return MemoryUsage(InitialHeapSize, used(), capacity(), max_capacity());
 }
 
+void CollectedHeap::set_gc_cause(GCCause::Cause v) {
+  if (UsePerfData) {
+    _gc_lastcause = _gc_cause;
+    _perf_gc_lastcause->set_value(GCCause::to_string(_gc_lastcause));
+    _perf_gc_cause->set_value(GCCause::to_string(v));
+  }
+  _gc_cause = v;
+}
 
 #ifndef PRODUCT
 void CollectedHeap::check_for_non_bad_heap_word_value(HeapWord* addr, size_t size) {
@@ -406,7 +457,7 @@ CollectedHeap::fill_with_object_impl(HeapWord* start, size_t words, bool zap)
     fill_with_array(start, words, zap);
   } else if (words > 0) {
     assert(words == min_fill_size(), "unaligned size");
-    ObjAllocator allocator(SystemDictionary::Object_klass(), words);
+    ObjAllocator allocator(vmClasses::Object_klass(), words);
     allocator.initialize(start);
   }
 }
@@ -414,14 +465,14 @@ CollectedHeap::fill_with_object_impl(HeapWord* start, size_t words, bool zap)
 void CollectedHeap::fill_with_object(HeapWord* start, size_t words, bool zap)
 {
   DEBUG_ONLY(fill_args_check(start, words);)
-  HandleMark hm;  // Free handles before leaving.
+  HandleMark hm(Thread::current());  // Free handles before leaving.
   fill_with_object_impl(start, words, zap);
 }
 
 void CollectedHeap::fill_with_objects(HeapWord* start, size_t words, bool zap)
 {
   DEBUG_ONLY(fill_args_check(start, words);)
-  HandleMark hm;  // Free handles before leaving.
+  HandleMark hm(Thread::current());  // Free handles before leaving.
 
   // Multiple objects may be required depending on the filler array maximum size. Fill
   // the range up to that with objects that are filler_array_max_size sized. The
@@ -487,6 +538,14 @@ void CollectedHeap::resize_all_tlabs() {
       thread->tlab().resize();
     }
   }
+}
+
+jlong CollectedHeap::millis_since_last_whole_heap_examined() {
+  return (os::javaTimeNanos() - _last_whole_heap_examined_time_ns) / NANOSECS_PER_MILLISEC;
+}
+
+void CollectedHeap::record_whole_heap_examined_timestamp() {
+  _last_whole_heap_examined_time_ns = os::javaTimeNanos();
 }
 
 void CollectedHeap::full_gc_dump(GCTimer* timer, bool before) {
@@ -574,15 +633,22 @@ void CollectedHeap::unpin_object(JavaThread* thread, oop obj) {
   ShouldNotReachHere();
 }
 
-void CollectedHeap::deduplicate_string(oop str) {
-  // Do nothing, unless overridden in subclass.
+bool CollectedHeap::is_archived_object(oop object) const {
+  return false;
 }
 
-size_t CollectedHeap::obj_size(oop obj) const {
-  return obj->size();
+void CollectedHeap::deduplicate_string(oop str) {
+  // Do nothing, unless overridden in subclass.
 }
 
 uint32_t CollectedHeap::hash_oop(oop obj) const {
   const uintptr_t addr = cast_from_oop<uintptr_t>(obj);
   return static_cast<uint32_t>(addr >> LogMinObjAlignment);
+}
+
+// It's the caller's responsibility to ensure glitch-freedom
+// (if required).
+void CollectedHeap::update_capacity_and_used_at_gc() {
+  _capacity_at_last_gc = capacity();
+  _used_at_last_gc     = used();
 }

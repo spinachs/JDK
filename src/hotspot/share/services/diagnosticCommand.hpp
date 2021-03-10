@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2011, 2019, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2011, 2020, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -330,6 +330,7 @@ class HeapDumpDCmd : public DCmdWithParser {
 protected:
   DCmdArgument<char*> _filename;
   DCmdArgument<bool>  _all;
+  DCmdArgument<jlong> _gzip;
 public:
   HeapDumpDCmd(outputStream* output, bool heap);
   static const char* name() {
@@ -375,28 +376,6 @@ public:
   static int num_arguments();
   virtual void execute(DCmdSource source, TRAPS);
 };
-
-class ClassStatsDCmd : public DCmdWithParser {
-protected:
-  DCmdArgument<bool> _all;
-  DCmdArgument<bool> _csv;
-  DCmdArgument<bool> _help;
-  DCmdArgument<char*> _columns;
-public:
-  ClassStatsDCmd(outputStream* output, bool heap);
-  static const char* name() {
-    return "GC.class_stats";
-  }
-  static const char* description() {
-    return "(Deprecated) Provide statistics about Java class meta data.";
-  }
-  static const char* impact() {
-    return "High: Depends on Java heap size and content.";
-  }
-  static int num_arguments();
-  virtual void execute(DCmdSource source, TRAPS);
-};
-
 
 class ClassHierarchyDCmd : public DCmdWithParser {
 protected:
@@ -598,6 +577,29 @@ public:
   virtual void execute(DCmdSource source, TRAPS);
 };
 
+#ifdef LINUX
+class PerfMapDCmd : public DCmd {
+public:
+  PerfMapDCmd(outputStream* output, bool heap) : DCmd(output, heap) {}
+  static const char* name() {
+    return "Compiler.perfmap";
+  }
+  static const char* description() {
+    return "Write map file for Linux perf tool.";
+  }
+  static const char* impact() {
+    return "Low";
+  }
+  static const JavaPermission permission() {
+    JavaPermission p = {"java.lang.management.ManagementPermission",
+                        "monitor", NULL};
+    return p;
+  }
+  static int num_arguments() { return 0; }
+  virtual void execute(DCmdSource source, TRAPS);
+};
+#endif // LINUX
+
 class CodeListDCmd : public DCmd {
 public:
   CodeListDCmd(outputStream* output, bool heap) : DCmd(output, heap) {}
@@ -618,7 +620,6 @@ public:
   static int num_arguments() { return 0; }
   virtual void execute(DCmdSource source, TRAPS);
 };
-
 
 class CodeCacheDCmd : public DCmd {
 public:

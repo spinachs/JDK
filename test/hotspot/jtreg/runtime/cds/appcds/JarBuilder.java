@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2015, 2019, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2015, 2020, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -32,6 +32,7 @@
  */
 
 import jdk.test.lib.JDKToolFinder;
+import jdk.test.lib.cds.CDSTestUtils;
 import jdk.test.lib.compiler.CompilerUtils;
 import jdk.test.lib.process.OutputAnalyzer;
 import jdk.test.lib.process.ProcessTools;
@@ -48,7 +49,7 @@ public class JarBuilder {
         .orElseThrow(() -> new RuntimeException("ToolProvider for jar not found"));
 
     public static String getJarFilePath(String jarName) {
-        return classDir + File.separator + jarName + ".jar";
+        return CDSTestUtils.getOutputDir() +  File.separator + jarName + ".jar";
     }
 
     // jar all files under dir, with manifest file man, with an optional versionArgs
@@ -59,7 +60,7 @@ public class JarBuilder {
     //   -C <path to the base classes> .\
     //    --release 9 -C <path to the versioned classes> .
     // the last line begins with "--release" corresponds to the optional versionArgs.
-    public static void build(String jarName, File dir, String man, String ...versionArgs)
+    public static String build(String jarName, File dir, String man, String ...versionArgs)
         throws Exception {
         ArrayList<String> args = new ArrayList<String>();
         if (man != null) {
@@ -67,7 +68,8 @@ public class JarBuilder {
         } else {
             args.add("cf");
         }
-        args.add(classDir + File.separator + jarName + ".jar");
+        String jarFile = getJarFilePath(jarName);
+        args.add(jarFile);
         if (man != null) {
             args.add(man);
         }
@@ -78,6 +80,7 @@ public class JarBuilder {
             args.add(verArg);
         }
         createJar(args);
+        return jarFile;
     }
 
     public static String build(String jarName, String ...classNames)
@@ -203,7 +206,7 @@ public class JarBuilder {
         }
     }
 
-    // Many AppCDS tests use the same simple "Hello.jar" which contains
+    // Many AppCDS tests use the same simple "hello.jar" which contains
     // simple Hello.class and does not specify additional attributes.
     // For this common use case, use this method to get the jar path.
     // The method will check if the jar already exists
@@ -259,8 +262,6 @@ public class JarBuilder {
     public static void signJar() throws Exception {
         String keyTool = JDKToolFinder.getJDKTool("keytool");
         String jarSigner = JDKToolFinder.getJDKTool("jarsigner");
-        String classDir = System.getProperty("test.classes");
-        String FS = File.separator;
 
         executeProcess(keyTool,
             "-genkey", "-keystore", "./keystore", "-alias", "mykey",
@@ -270,8 +271,8 @@ public class JarBuilder {
 
         executeProcess(jarSigner,
            "-keystore", "./keystore", "-storepass", "abc123", "-keypass",
-           "abc123", "-signedjar", classDir + FS + "signed_hello.jar",
-           classDir + FS + "hello.jar", "mykey")
+           "abc123", "-signedjar", getJarFilePath("signed_hello"),
+           getJarFilePath("hello"), "mykey")
            .shouldHaveExitValue(0);
     }
 

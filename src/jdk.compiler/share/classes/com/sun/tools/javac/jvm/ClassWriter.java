@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 1999, 2019, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 1999, 2021, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -909,6 +909,21 @@ public class ClassWriter extends ClassFile {
         }
     }
 
+    /** Write "PermittedSubclasses" attribute.
+     */
+    int writePermittedSubclassesIfNeeded(ClassSymbol csym) {
+        if (csym.permitted.nonEmpty()) {
+            int alenIdx = writeAttr(names.PermittedSubclasses);
+            databuf.appendChar(csym.permitted.size());
+            for (Symbol c : csym.permitted) {
+                databuf.appendChar(poolWriter.putClass((ClassSymbol) c));
+            }
+            endAttr(alenIdx);
+            return 1;
+        }
+        return 0;
+    }
+
     /** Write "bootstrapMethods" attribute.
      */
     void writeBootstrapMethods() {
@@ -1617,7 +1632,7 @@ public class ClassWriter extends ClassFile {
         acount += writeExtraAttributes(c);
 
         poolbuf.appendInt(JAVA_MAGIC);
-        if (preview.isEnabled()) {
+        if (preview.isEnabled() && preview.usesPreview(c.sourcefile)) {
             poolbuf.appendChar(ClassFile.PREVIEW_MINOR_VERSION);
         } else {
             poolbuf.appendChar(target.minorVersion);
@@ -1633,6 +1648,10 @@ public class ClassWriter extends ClassFile {
 
         if (c.isRecord()) {
             acount += writeRecordAttribute(c);
+        }
+
+        if (target.hasSealedClasses()) {
+            acount += writePermittedSubclassesIfNeeded(c);
         }
 
         if (!poolWriter.bootstrapMethods.isEmpty()) {

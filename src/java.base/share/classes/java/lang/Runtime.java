@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 1995, 2019, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 1995, 2020, Oracle and/or its affiliates. All rights reserved.
  * Copyright (c) 2019, Azul Systems, Inc. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
@@ -36,6 +36,7 @@ import java.util.Optional;
 import java.util.StringTokenizer;
 
 import jdk.internal.access.SharedSecrets;
+import jdk.internal.loader.NativeLibrary;
 import jdk.internal.reflect.CallerSensitive;
 import jdk.internal.reflect.Reflection;
 
@@ -47,7 +48,6 @@ import jdk.internal.reflect.Reflection;
  * <p>
  * An application cannot create its own instance of this class.
  *
- * @author  unascribed
  * @see     java.lang.Runtime#getRuntime()
  * @since   1.0
  */
@@ -738,11 +738,12 @@ public class Runtime {
         if (security != null) {
             security.checkLink(filename);
         }
-        if (!(new File(filename).isAbsolute())) {
+        File file = new File(filename);
+        if (!file.isAbsolute()) {
             throw new UnsatisfiedLinkError(
                 "Expecting an absolute path of the library: " + filename);
         }
-        ClassLoader.loadLibrary(fromClass, filename, true);
+        ClassLoader.loadLibrary(fromClass, file);
     }
 
     /**
@@ -755,8 +756,8 @@ public class Runtime {
      * for more details.
      *
      * Otherwise, the libname argument is loaded from a system library
-     * location and mapped to a native library image in an implementation-
-     * dependent manner.
+     * location and mapped to a native library image in an
+     * implementation-dependent manner.
      * <p>
      * First, if there is a security manager, its {@code checkLink}
      * method is called with the {@code libname} as its argument.
@@ -804,7 +805,7 @@ public class Runtime {
             throw new UnsatisfiedLinkError(
                 "Directory separator should not appear in library name: " + libname);
         }
-        ClassLoader.loadLibrary(fromClass, libname, false);
+        ClassLoader.loadLibrary(fromClass, libname);
     }
 
     /**
@@ -940,14 +941,15 @@ public class Runtime {
      *     $VNUM(-$PRE)?
      * </pre></blockquote>
      *
-     * <p>This is a <a href="./doc-files/ValueBased.html">value-based</a>
-     * class; use of identity-sensitive operations (including reference equality
-     * ({@code ==}), identity hash code, or synchronization) on instances of
-     * {@code Version} may have unpredictable results and should be avoided.
-     * </p>
+     * <p>This is a <a href="{@docRoot}/java.base/java/lang/doc-files/ValueBased.html">value-based</a>
+     * class; programmers should treat instances that are
+     * {@linkplain #equals(Object) equal} as interchangeable and should not
+     * use instances for synchronization, or unpredictable behavior may
+     * occur. For example, in a future release, synchronization may fail.</p>
      *
      * @since  9
      */
+    @jdk.internal.ValueBased
     public static final class Version
         implements Comparable<Version>
     {
@@ -958,7 +960,7 @@ public class Runtime {
 
         /*
          * List of version number components passed to this constructor MUST
-         * be at least unmodifiable (ideally immutable). In the case on an
+         * be at least unmodifiable (ideally immutable). In the case of an
          * unmodifiable list, the caller MUST hand the list over to this
          * constructor and never change the underlying list.
          */
@@ -1044,7 +1046,7 @@ public class Runtime {
                 } else {
                     if (optional.isPresent() && !pre.isPresent()) {
                         throw new IllegalArgumentException("optional component"
-                            + " must be preceeded by a pre-release component"
+                            + " must be preceded by a pre-release component"
                             + " or '+': '" + s + "'");
                     }
                 }

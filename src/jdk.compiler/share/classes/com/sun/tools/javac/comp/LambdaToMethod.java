@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2010, 2019, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2010, 2020, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -36,7 +36,6 @@ import com.sun.tools.javac.tree.JCTree.JCMemberReference.ReferenceKind;
 import com.sun.tools.javac.tree.TreeMaker;
 import com.sun.tools.javac.tree.TreeTranslator;
 import com.sun.tools.javac.code.Attribute;
-import com.sun.tools.javac.code.Scope.WriteableScope;
 import com.sun.tools.javac.code.Symbol;
 import com.sun.tools.javac.code.Symbol.ClassSymbol;
 import com.sun.tools.javac.code.Symbol.DynamicMethodSymbol;
@@ -127,6 +126,9 @@ public class LambdaToMethod extends TreeTranslator {
     /** deduplicate lambda implementation methods */
     private final boolean deduplicateLambdas;
 
+    /** lambda proxy is a dynamic nestmate */
+    private final boolean nestmateLambdas;
+
     /** Flag for alternate metafactories indicating the lambda object is intended to be serializable */
     public static final int FLAG_SERIALIZABLE = 1 << 0;
 
@@ -168,6 +170,7 @@ public class LambdaToMethod extends TreeTranslator {
                 || options.isSet(Option.G_CUSTOM, "vars");
         verboseDeduplication = options.isSet("debug.dumpLambdaToMethodDeduplication");
         deduplicateLambdas = options.getBoolean("deduplicateLambdas", true);
+        nestmateLambdas = Target.instance(context).runtimeUseNestAccess();
     }
     // </editor-fold>
 
@@ -965,13 +968,18 @@ public class LambdaToMethod extends TreeTranslator {
             for (int i = 0; implPTypes.nonEmpty() && i < last; ++i) {
                 // By default use the implementation method parameter type
                 Type parmType = implPTypes.head;
-                // If the unerased parameter type is a type variable whose
-                // bound is an intersection (eg. <T extends A & B>) then
-                // use the SAM parameter type
-                if (checkForIntersection && descPTypes.head.getKind() == TypeKind.TYPEVAR) {
-                    TypeVar tv = (TypeVar) descPTypes.head;
-                    if (tv.getUpperBound().getKind() == TypeKind.INTERSECTION) {
+                if (checkForIntersection) {
+                    if (descPTypes.head.getKind() == TypeKind.INTERSECTION) {
                         parmType = samPTypes.head;
+                    }
+                    // If the unerased parameter type is a type variable whose
+                    // bound is an intersection (eg. <T extends A & B>) then
+                    // use the SAM parameter type
+                    if (descPTypes.head.getKind() == TypeKind.TYPEVAR) {
+                        TypeVar tv = (TypeVar) descPTypes.head;
+                        if (tv.getUpperBound().getKind() == TypeKind.INTERSECTION) {
+                            parmType = samPTypes.head;
+                        }
                     }
                 }
                 addParameter("x$" + i, parmType, true);
@@ -996,7 +1004,10 @@ public class LambdaToMethod extends TreeTranslator {
         private JCExpression makeReceiver(VarSymbol rcvr) {
             if (rcvr == null) return null;
             JCExpression rcvrExpr = make.Ident(rcvr);
-            Type rcvrType = tree.ownerAccessible ? tree.sym.enclClass().type : tree.expr.type;
+            boolean protAccess =
+                    isProtectedInSuperClassOfEnclosingClassInOtherPackage(tree.sym, owner);
+            Type rcvrType = tree.ownerAccessible && !protAccess ? tree.sym.enclClass().type
+                                                                : tree.expr.type;
             if (rcvrType == syms.arrayClass.type) {
                 // Map the receiver type to the actually type, not just "array"
                 rcvrType = tree.getQualifierExpression().type;
@@ -1432,7 +1443,7 @@ public class LambdaToMethod extends TreeTranslator {
         public void visitNewClass(JCNewClass tree) {
             TypeSymbol def = tree.type.tsym;
             boolean inReferencedClass = currentlyInClass(def);
-            boolean isLocal = def.isLocal();
+            boolean isLocal = def.isDirectlyOrIndirectlyLocal();
             if ((inReferencedClass && isLocal || lambdaNewClassFilter(context(), tree))) {
                 TranslationContext<?> localContext = context();
                 final TypeSymbol outerInstanceSymbol = tree.type.getEnclosingType().tsym;
@@ -1448,11 +1459,11 @@ public class LambdaToMethod extends TreeTranslator {
                     localContext = localContext.prev;
                 }
             }
+            super.visitNewClass(tree);
             if (context() != null && !inReferencedClass && isLocal) {
                 LambdaTranslationContext lambdaContext = (LambdaTranslationContext)context();
                 captureLocalClassDefs(def, lambdaContext);
             }
-            super.visitNewClass(tree);
         }
         //where
             void captureLocalClassDefs(Symbol csym, final LambdaTranslationContext lambdaContext) {
@@ -1586,7 +1597,7 @@ public class LambdaToMethod extends TreeTranslator {
             while (frameStack2.nonEmpty()) {
                 switch (frameStack2.head.tree.getTag()) {
                     case VARDEF:
-                        if (((JCVariableDecl)frameStack2.head.tree).sym.isLocal()) {
+                        if (((JCVariableDecl)frameStack2.head.tree).sym.isDirectlyOrIndirectlyLocal()) {
                             frameStack2 = frameStack2.tail;
                             break;
                         }
@@ -2057,12 +2068,30 @@ public class LambdaToMethod extends TreeTranslator {
                         };
                         break;
                     case LOCAL_VAR:
-                        ret = new VarSymbol(sym.flags() & FINAL, sym.name, sym.type, translatedSym);
+                        ret = new VarSymbol(sym.flags() & FINAL, sym.name, sym.type, translatedSym) {
+                            @Override
+                            public Symbol baseSymbol() {
+                                //keep mapping with original symbol
+                                return sym;
+                            }
+                        };
                         ((VarSymbol) ret).pos = ((VarSymbol) sym).pos;
+                        // If sym.data == ElementKind.EXCEPTION_PARAMETER,
+                        // set ret.data = ElementKind.EXCEPTION_PARAMETER too.
+                        // Because method com.sun.tools.javac.jvm.Code.fillExceptionParameterPositions and
+                        // com.sun.tools.javac.jvm.Code.fillLocalVarPosition would use it.
+                        // See JDK-8257740 for more information.
+                        if (((VarSymbol) sym).isExceptionParameter()) {
+                            ((VarSymbol) ret).setData(ElementKind.EXCEPTION_PARAMETER);
+                        }
                         break;
                     case PARAM:
                         ret = new VarSymbol((sym.flags() & FINAL) | PARAMETER, sym.name, types.erasure(sym.type), translatedSym);
                         ((VarSymbol) ret).pos = ((VarSymbol) sym).pos;
+                        // Set ret.data. Same as case LOCAL_VAR above.
+                        if (((VarSymbol) sym).isExceptionParameter()) {
+                            ((VarSymbol) ret).setData(ElementKind.EXCEPTION_PARAMETER);
+                        }
                         break;
                     default:
                         Assert.error(skind.name());
@@ -2254,19 +2283,17 @@ public class LambdaToMethod extends TreeTranslator {
             }
 
             /**
-             * The VM does not support access across nested classes (8010319).
-             * Were that ever to change, this should be removed.
+             * This method should be called only when target release <= 14
+             * where LambdaMetaFactory does not spin nestmate classes.
+             *
+             * This method should be removed when --release 14 is not supported.
              */
             boolean isPrivateInOtherClass() {
+                assert !nestmateLambdas;
                 return  (tree.sym.flags() & PRIVATE) != 0 &&
                         !types.isSameType(
                               types.erasure(tree.sym.enclClass().asType()),
                               types.erasure(owner.enclClass().asType()));
-            }
-
-            boolean isProtectedInSuperClassOfEnclosingClassInOtherPackage() {
-                return ((tree.sym.flags() & PROTECTED) != 0 &&
-                        tree.sym.packge() != owner.packge());
             }
 
             /**
@@ -2304,12 +2331,12 @@ public class LambdaToMethod extends TreeTranslator {
                         isSuper ||
                         needsVarArgsConversion() ||
                         isArrayOp() ||
-                        isPrivateInOtherClass() ||
-                        isProtectedInSuperClassOfEnclosingClassInOtherPackage() ||
+                        (!nestmateLambdas && isPrivateInOtherClass()) ||
+                        isProtectedInSuperClassOfEnclosingClassInOtherPackage(tree.sym, owner) ||
                         !receiverAccessible() ||
                         (tree.getMode() == ReferenceMode.NEW &&
                           tree.kind != ReferenceKind.ARRAY_CTOR &&
-                          (tree.sym.owner.isLocal() || tree.sym.owner.isInner()));
+                          (tree.sym.owner.isDirectlyOrIndirectlyLocal() || tree.sym.owner.isInner()));
             }
 
             Type generatedRefSig() {
@@ -2380,6 +2407,12 @@ public class LambdaToMethod extends TreeTranslator {
         }
     }
 
+    private boolean isProtectedInSuperClassOfEnclosingClassInOtherPackage(Symbol targetReference,
+                                                                          Symbol currentClass) {
+        return ((targetReference.flags() & PROTECTED) != 0 &&
+                targetReference.packge() != currentClass.packge());
+    }
+
     /**
      * Signature Generation
      */
@@ -2415,7 +2448,8 @@ public class LambdaToMethod extends TreeTranslator {
 
         @Override
         protected void append(byte[] ba) {
-            sb.append(new String(ba));
+            Name name = names.fromUtf(ba);
+            sb.append(name.toString());
         }
 
         @Override

@@ -184,6 +184,7 @@ private:
   void add_list_common_start(FreeRegionList* from_list);
   void add_list_common_end(FreeRegionList* from_list);
 
+  void verify_region_to_remove(HeapRegion* curr, HeapRegion* next) NOT_DEBUG_RETURN;
 protected:
   // See the comment for HeapRegionSetBase::clear()
   virtual void clear();
@@ -229,12 +230,10 @@ public:
 
   // Remove all (contiguous) regions from first to first + num_regions -1 from
   // this list.
-  // Num_regions must be > 1.
+  // Num_regions must be >= 1.
   void remove_starting_at(HeapRegion* first, uint num_regions);
 
   virtual void verify();
-
-  uint num_of_regions_in_range(uint start, uint end) const;
 
   using HeapRegionSetBase::length;
   uint length(uint node_index) const;

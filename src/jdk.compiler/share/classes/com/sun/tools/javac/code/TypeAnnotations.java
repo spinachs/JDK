@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2009, 2019, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2009, 2020, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -389,7 +389,8 @@ public class TypeAnnotations {
             if (sym.getKind() == ElementKind.PARAMETER ||
                 sym.getKind() == ElementKind.LOCAL_VARIABLE ||
                 sym.getKind() == ElementKind.RESOURCE_VARIABLE ||
-                sym.getKind() == ElementKind.EXCEPTION_PARAMETER) {
+                sym.getKind() == ElementKind.EXCEPTION_PARAMETER ||
+                sym.getKind() == ElementKind.BINDING_VARIABLE) {
                 appendTypeAnnotationsToOwner(sym, typeAnnotations);
             }
         }
@@ -548,6 +549,9 @@ public class TypeAnnotations {
          */
         private Type rewriteArrayType(ArrayType type, List<TypeCompound> annotations, TypeAnnotationPosition pos) {
             ArrayType tomodify = new ArrayType(type);
+            if (type.isVarargs()) {
+                tomodify = tomodify.makeVarargs();
+            }
             ArrayType res = tomodify;
 
             List<TypePathEntry> loc = List.nil();
@@ -948,9 +952,8 @@ public class TypeAnnotations {
                                                  " within frame " + frame);
                     }
 
-                case BINDING_PATTERN:
                 case VARIABLE:
-                    VarSymbol v = frame.hasTag(Tag.BINDINGPATTERN) ? ((JCBindingPattern) frame).symbol : ((JCVariableDecl) frame).sym;
+                    VarSymbol v = ((JCVariableDecl) frame).sym;
                     if (v.getKind() != ElementKind.FIELD) {
                         appendTypeAnnotationsToOwner(v, v.getRawTypeAttributes());
                     }
@@ -1129,6 +1132,9 @@ public class TypeAnnotations {
                 scan(tree.implementing);
             }
             scan(tree.defs);
+            if (tree.sym.isRecord()) {
+                tree.sym.getRecordComponents().stream().forEach(rc -> scan(rc.accessorMeth));
+            }
         }
 
         /**
@@ -1259,6 +1265,11 @@ public class TypeAnnotations {
                 if (!tree.isImplicitlyTyped()) {
                     separateAnnotationsKinds(tree.vartype, tree.sym.type, tree.sym, pos);
                 }
+            } else if (tree.sym.getKind() == ElementKind.BINDING_VARIABLE) {
+                final TypeAnnotationPosition pos =
+                    TypeAnnotationPosition.localVariable(currentLambda,
+                                                         tree.pos);
+                separateAnnotationsKinds(tree.vartype, tree.sym.type, tree.sym, pos);
             } else if (tree.sym.getKind() == ElementKind.EXCEPTION_PARAMETER) {
                 final TypeAnnotationPosition pos =
                     TypeAnnotationPosition.exceptionParameter(currentLambda,

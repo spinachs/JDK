@@ -123,7 +123,7 @@ enum Alert {
         }
 
         SSLException ssle;
-        if ((cause != null) && (cause instanceof IOException)) {
+        if (cause instanceof IOException) {
             ssle = new SSLException(reason);
         } else if ((this == UNEXPECTED_MESSAGE)) {
             ssle = new SSLProtocolException(reason);
@@ -265,14 +265,22 @@ enum Alert {
                     // It's OK to get a no_certificate alert from a client of
                     // which we requested client authentication.  However,
                     // if we required it, then this is not acceptable.
-                     if (tc.sslConfig.isClientMode ||
+                    if (tc.sslConfig.isClientMode ||
                             alert != Alert.NO_CERTIFICATE ||
                             (tc.sslConfig.clientAuthType !=
                                     ClientAuthType.CLIENT_AUTH_REQUESTED)) {
                         throw tc.fatal(Alert.HANDSHAKE_FAILURE,
                             "received handshake warning: " + alert.description);
-                    }  // Otherwise, ignore the warning
-                }   // Otherwise, ignore the warning.
+                    } else {
+                        // Otherwise ignore the warning but remove the
+                        // Certificate and CertificateVerify handshake
+                        // consumer so the state machine doesn't expect it.
+                        tc.handshakeContext.handshakeConsumers.remove(
+                                SSLHandshake.CERTIFICATE.id);
+                        tc.handshakeContext.handshakeConsumers.remove(
+                                SSLHandshake.CERTIFICATE_VERIFY.id);
+                    }
+                }  // Otherwise, ignore the warning
             } else {    // fatal or unknown
                 String diagnostic;
                 if (alert == null) {

@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 1995, 2019, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 1995, 2021, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -45,6 +45,7 @@ import java.util.ServiceLoader;
 
 import jdk.internal.access.JavaNetURLAccess;
 import jdk.internal.access.SharedSecrets;
+import jdk.internal.misc.VM;
 import sun.net.util.IPAddressUtil;
 import sun.security.util.SecurityConstants;
 import sun.security.action.GetPropertyAction;
@@ -248,7 +249,7 @@ public final class URL implements java.io.Serializable {
      * The host's IP address, used in equals and hashCode.
      * Computed on demand. An uninitialized or unknown hostAddress is null.
      */
-    transient InetAddress hostAddress;
+    private transient InetAddress hostAddress;
 
     /**
      * The URLStreamHandler for this URL.
@@ -396,8 +397,8 @@ public final class URL implements java.io.Serializable {
      * a {@code handler} of {@code null} indicates that the URL
      * should use a default stream handler for the protocol, as outlined
      * for:
-     *     java.net.URL#URL(java.lang.String, java.lang.String, int,
-     *                      java.lang.String)
+     *     {@link java.net.URL#URL(java.lang.String, java.lang.String, int,
+     *                      java.lang.String)}
      *
      * <p>If the handler is not null and there is a security manager,
      * the security manager's {@code checkPermission}
@@ -413,7 +414,7 @@ public final class URL implements java.io.Serializable {
      * @param      file       the file on the host
      * @param      handler    the stream handler for the URL.
      * @throws     MalformedURLException  if an unknown protocol or the port
-                        is a negative number other than -1
+     *                    is a negative number other than -1
      * @throws     SecurityException
      *        if a security manager exists and its
      *        {@code checkPermission} method doesn't allow
@@ -774,39 +775,6 @@ public final class URL implements java.io.Serializable {
     }
 
     /**
-     * Sets the fields of the URL. This is not a public method so that
-     * only URLStreamHandlers can modify URL fields. URLs are
-     * otherwise constant.
-     *
-     * @param protocol the name of the protocol to use
-     * @param host the name of the host
-       @param port the port number on the host
-     * @param file the file on the host
-     * @param ref the internal reference in the URL
-     */
-    void set(String protocol, String host, int port,
-             String file, String ref) {
-        synchronized (this) {
-            this.protocol = protocol;
-            this.host = host;
-            authority = port == -1 ? host : host + ":" + port;
-            this.port = port;
-            this.file = file;
-            this.ref = ref;
-            /* This is very important. We must recompute this after the
-             * URL has been changed. */
-            hashCode = -1;
-            hostAddress = null;
-            int q = file.lastIndexOf('?');
-            if (q != -1) {
-                query = file.substring(q+1);
-                path = file.substring(0, q);
-            } else
-                path = file;
-        }
-    }
-
-    /**
      * Sets the specified 8 fields of the URL. This is not a public method so
      * that only URLStreamHandlers can modify URL fields. URLs are otherwise
      * constant.
@@ -840,6 +808,31 @@ public final class URL implements java.io.Serializable {
             this.authority = authority;
         }
     }
+
+    /**
+     * Returns the address of the host represented by this URL.
+     * A {@link SecurityException} or an {@link UnknownHostException}
+     * while getting the host address will result in this method returning
+     * {@code null}
+     *
+     * @return an {@link InetAddress} representing the host
+     */
+    synchronized InetAddress getHostAddress() {
+        if (hostAddress != null) {
+            return hostAddress;
+        }
+
+        if (host == null || host.isEmpty()) {
+            return null;
+        }
+        try {
+            hostAddress = InetAddress.getByName(host);
+        } catch (UnknownHostException | SecurityException ex) {
+            return null;
+        }
+        return hostAddress;
+    }
+
 
     /**
      * Gets the query part of this {@code URL}.
@@ -1431,7 +1424,7 @@ public final class URL implements java.io.Serializable {
         boolean checkedWithFactory = false;
         boolean overrideableProtocol = isOverrideable(protocol);
 
-        if (overrideableProtocol && jdk.internal.misc.VM.isBooted()) {
+        if (overrideableProtocol && VM.isBooted()) {
             // Use the factory (if any). Volatile read makes
             // URLStreamHandlerFactory appear fully initialized to current thread.
             fac = factory;
@@ -1488,19 +1481,20 @@ public final class URL implements java.io.Serializable {
     }
 
     /**
-     * @serialField    protocol String
+     * @serialField    protocol String the protocol to use (ftp, http, nntp, ... etc.)
      *
-     * @serialField    host String
+     * @serialField    host String the host name to connect to
      *
-     * @serialField    port int
+     * @serialField    port int the protocol port to connect to
      *
-     * @serialField    authority String
+     * @serialField    authority String the authority part of this URL
      *
-     * @serialField    file String
+     * @serialField    file String the specified file name on that host. {@code file} is
+     *                 defined as {@code path[?query]}
      *
-     * @serialField    ref String
+     * @serialField    ref String the fragment part of this URL
      *
-     * @serialField    hashCode int
+     * @serialField    hashCode int the hashCode of this URL
      *
      */
     @java.io.Serial
@@ -1522,6 +1516,9 @@ public final class URL implements java.io.Serializable {
      * the reader must ensure that calling getURLStreamHandler with
      * the protocol variable returns a valid URLStreamHandler and
      * throw an IOException if it does not.
+     *
+     * @param  s the {@code ObjectOutputStream} to which data is written
+     * @throws IOException if an I/O error occurs
      */
     @java.io.Serial
     private synchronized void writeObject(java.io.ObjectOutputStream s)
@@ -1534,6 +1531,10 @@ public final class URL implements java.io.Serializable {
      * readObject is called to restore the state of the URL from the
      * stream.  It reads the components of the URL and finds the local
      * stream handler.
+     *
+     * @param  s the {@code ObjectInputStream} from which data is read
+     * @throws IOException if an I/O error occurs
+     * @throws ClassNotFoundException if a serialized class cannot be loaded
      */
     @java.io.Serial
     private synchronized void readObject(java.io.ObjectInputStream s)
@@ -1665,7 +1666,9 @@ public final class URL implements java.io.Serializable {
     }
 
     boolean isBuiltinStreamHandler(URLStreamHandler handler) {
-       return isBuiltinStreamHandler(handler.getClass().getName());
+       Class<?> handlerClass = handler.getClass();
+       return isBuiltinStreamHandler(handlerClass.getName())
+                 || VM.isSystemDomainLoader(handlerClass.getClassLoader());
     }
 
     private boolean isBuiltinStreamHandler(String handlerClassName) {

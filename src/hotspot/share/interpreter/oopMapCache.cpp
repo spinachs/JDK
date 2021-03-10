@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 1997, 2019, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 1997, 2021, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -31,6 +31,7 @@
 #include "oops/oop.inline.hpp"
 #include "runtime/atomic.hpp"
 #include "runtime/handles.inline.hpp"
+#include "runtime/safepoint.hpp"
 #include "runtime/signature.hpp"
 
 class OopMapCacheEntry: private InterpreterOopMap {
@@ -257,7 +258,7 @@ class MaskFillerForNative: public NativeSignatureIterator {
   }
 
   void generate() {
-    NativeSignatureIterator::iterate();
+    iterate();
   }
 };
 
@@ -321,7 +322,6 @@ void OopMapCacheEntry::fill_for_native(const methodHandle& mh) {
 
 
 void OopMapCacheEntry::fill(const methodHandle& method, int bci) {
-  HandleMark hm;
   // Flush entry to deallocate an existing entry
   flush();
   set_method(method());

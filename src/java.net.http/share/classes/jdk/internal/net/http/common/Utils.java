@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2015, 2019, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2015, 2020, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -59,6 +59,7 @@ import java.text.Normalizer;
 import java.util.Arrays;
 import java.util.Collection;
 import java.util.Collections;
+import java.util.HexFormat;
 import java.util.List;
 import java.util.Set;
 import java.util.TreeSet;
@@ -286,11 +287,21 @@ public final class Utils {
     }
 
     public static Throwable getCompletionCause(Throwable x) {
-        if (!(x instanceof CompletionException)
-                && !(x instanceof ExecutionException)) return x;
-        final Throwable cause = x.getCause();
-        if (cause == null) {
+        Throwable cause = x;
+        while ((cause instanceof CompletionException)
+                || (cause instanceof ExecutionException)) {
+            cause = cause.getCause();
+        }
+        if (cause == null && cause != x) {
             throw new InternalError("Unexpected null cause", x);
+        }
+        return cause;
+    }
+
+    public static Throwable getCancelCause(Throwable x) {
+        Throwable cause = getCompletionCause(x);
+        if (cause instanceof ConnectionExpiredException) {
+            cause = cause.getCause();
         }
         return cause;
     }
@@ -390,7 +401,7 @@ public final class Utils {
         for (char c : allowedTokenChars) {
             tchar[c] = true;
         }
-        for (char c = 0x21; c < 0xFF; c++) {
+        for (char c = 0x21; c <= 0xFF; c++) {
             fieldvchar[c] = true;
         }
         fieldvchar[0x7F] = false; // a little hole (DEL) in the range
@@ -1075,17 +1086,6 @@ public final class Utils {
 
     // -- toAsciiString-like support to encode path and query URI segments
 
-    private static final char[] hexDigits = {
-            '0', '1', '2', '3', '4', '5', '6', '7',
-            '8', '9', 'A', 'B', 'C', 'D', 'E', 'F'
-    };
-
-    private static void appendEscape(StringBuilder sb, byte b) {
-        sb.append('%');
-        sb.append(hexDigits[(b >> 4) & 0x0f]);
-        sb.append(hexDigits[(b >> 0) & 0x0f]);
-    }
-
     // Encodes all characters >= \u0080 into escaped, normalized UTF-8 octets,
     // assuming that s is otherwise legal
     //
@@ -1113,13 +1113,16 @@ public final class Utils {
             assert false : x;
         }
 
+        HexFormat format = HexFormat.of().withUpperCase();
         StringBuilder sb = new StringBuilder();
         while (bb.hasRemaining()) {
             int b = bb.get() & 0xff;
-            if (b >= 0x80)
-                appendEscape(sb, (byte)b);
-            else
-                sb.append((char)b);
+            if (b >= 0x80) {
+                sb.append('%');
+                format.toHexDigits(sb, (byte)b);
+            } else {
+                sb.append((char) b);
+            }
         }
         return sb.toString();
     }

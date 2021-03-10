@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2012, 2019, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2012, 2020, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -505,14 +505,15 @@ public class DeferredAttr extends JCTree.Visitor {
     /**
      * Attribute the given tree, mostly reverting side-effects applied to shared
      * compiler state. Exceptions include the ArgumentAttr.argumentTypeCache,
-     * changes to which may be preserved if localCache is null.
+     * changes to which may be preserved if localCache is null and errors reported
+     * outside of the speculatively attributed tree.
      */
     <Z> JCTree attribSpeculative(JCTree tree, Env<AttrContext> env, ResultInfo resultInfo,
                               Supplier<DiagnosticHandler> diagHandlerCreator, AttributionMode attributionMode,
                               LocalCacheContext localCache) {
         Env<AttrContext> speculativeEnv = env.dup(tree, env.info.dup(env.info.scope.dupUnshared(env.info.scope.owner)));
         speculativeEnv.info.attributionMode = attributionMode;
-        Log.DiagnosticHandler deferredDiagnosticHandler = diagHandlerCreator != null ? diagHandlerCreator.get() : new DeferredDiagnosticHandler(log);
+        Log.DiagnosticHandler deferredDiagnosticHandler = diagHandlerCreator != null ? diagHandlerCreator.get() : new DeferredAttrDiagHandler(log, tree);
         DeferredCompletionFailureHandler.Handler prevCFHandler = dcfh.setHandler(dcfh.speculativeCodeHandler);
         Queues prevQueues = annotate.setQueues(new Queues());
         int nwarnings = log.nwarnings;
@@ -531,6 +532,35 @@ public class DeferredAttr extends JCTree.Visitor {
             }
         }
     }
+    //where
+        static class DeferredAttrDiagHandler extends Log.DeferredDiagnosticHandler {
+
+            static class PosScanner extends TreeScanner {
+                DiagnosticPosition pos;
+                boolean found = false;
+
+                PosScanner(DiagnosticPosition pos) {
+                    this.pos = pos;
+                }
+
+                @Override
+                public void scan(JCTree tree) {
+                    if (tree != null &&
+                            tree.pos() == pos) {
+                        found = true;
+                    }
+                    super.scan(tree);
+                }
+            }
+
+            DeferredAttrDiagHandler(Log log, JCTree newTree) {
+                super(log, d -> {
+                    PosScanner posScanner = new PosScanner(d.getDiagnosticPosition());
+                    posScanner.scan(newTree);
+                    return posScanner.found;
+                });
+            }
+        }
 
     /**
      * A deferred context is created on each method check. A deferred context is
@@ -889,6 +919,13 @@ public class DeferredAttr extends JCTree.Visitor {
             }
 
             @Override
+            public void visitConditional(JCTree.JCConditional tree) {
+                //skip tree.cond
+                scan(tree.truepart);
+                scan(tree.falsepart);
+            }
+
+            @Override
             public void visitReference(JCMemberReference tree) {
                 Assert.checkNonNull(tree.getOverloadKind());
                 Check.CheckContext checkContext = resultInfo.checkContext;
@@ -1052,7 +1089,12 @@ public class DeferredAttr extends JCTree.Visitor {
          * a default expected type (j.l.Object).
          */
         private Type recover(DeferredType dt, Type pt) {
-            dt.check(attr.new RecoveryInfo(deferredAttrContext, pt != null ? pt : Type.recoveryType) {
+            boolean isLambdaOrMemberRef =
+                    dt.tree.hasTag(REFERENCE) || dt.tree.hasTag(LAMBDA);
+            boolean needsRecoveryType =
+                    pt == null || (isLambdaOrMemberRef && !types.isFunctionalInterface(pt));
+            Type ptRecovery = needsRecoveryType ? Type.recoveryType: pt;
+            dt.check(attr.new RecoveryInfo(deferredAttrContext, ptRecovery) {
                 @Override
                 protected Type check(DiagnosticPosition pos, Type found) {
                     return chk.checkNonVoid(pos, super.check(pos, found));
@@ -1287,20 +1329,28 @@ public class DeferredAttr extends JCTree.Visitor {
      */
     enum AttributionMode {
         /**Normal, non-speculative, attribution.*/
-        FULL(false),
+        FULL(false, true),
         /**Speculative attribution on behalf of an Analyzer.*/
-        ANALYZER(true),
+        ATTRIB_TO_TREE(true, true),
+        /**Speculative attribution on behalf of an Analyzer.*/
+        ANALYZER(true, false),
         /**Speculative attribution.*/
-        SPECULATIVE(true);
+        SPECULATIVE(true, false);
 
-        AttributionMode(boolean isSpeculative) {
+        AttributionMode(boolean isSpeculative, boolean recover) {
             this.isSpeculative = isSpeculative;
+            this.recover = recover;
         }
 
         boolean isSpeculative() {
             return isSpeculative;
         }
 
+        boolean recover() {
+            return recover;
+        }
+
         final boolean isSpeculative;
+        final boolean recover;
     }
 }

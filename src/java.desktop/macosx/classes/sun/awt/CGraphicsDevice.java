@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2012, 2019, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2012, 2020, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -63,7 +63,7 @@ public final class CGraphicsDevice extends GraphicsDevice
 
     public CGraphicsDevice(final int displayID) {
         this.displayID = displayID;
-        config = CGLGraphicsConfig.getConfig(this, displayID, 0);
+        config = CGLGraphicsConfig.getConfig(this);
         // initializes default device state, might be redundant step since we
         // call "displayChanged()" later anyway, but we do not want to leave the
         // device in an inconsistent state after construction
@@ -131,9 +131,14 @@ public final class CGraphicsDevice extends GraphicsDevice
         return scale;
     }
 
-    public void invalidate(final int defaultDisplayID) {
+    /**
+     * Invalidates this device so it will point to some other "new" device.
+     *
+     * @param  device the new device, usually the main screen
+     */
+    public void invalidate(CGraphicsDevice device) {
         //TODO do we need to restore the full-screen window/modes on old device?
-        displayID = defaultDisplayID;
+        displayID = device.displayID;
     }
 
     @Override

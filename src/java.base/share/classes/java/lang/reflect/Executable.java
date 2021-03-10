@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2012, 2019, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2012, 2021, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -38,6 +38,7 @@ import sun.reflect.annotation.AnnotationParser;
 import sun.reflect.annotation.AnnotationSupport;
 import sun.reflect.annotation.TypeAnnotationParser;
 import sun.reflect.annotation.TypeAnnotation;
+import sun.reflect.generics.reflectiveObjects.ParameterizedTypeImpl;
 import sun.reflect.generics.repository.ConstructorRepository;
 
 /**
@@ -217,7 +218,7 @@ public abstract class Executable extends AccessibleObject
      * @throws GenericSignatureFormatError if the generic
      *     signature of this generic declaration does not conform to
      *     the format specified in
-     *     <cite>The Java&trade; Virtual Machine Specification</cite>
+     *     <cite>The Java Virtual Machine Specification</cite>
      */
     public abstract TypeVariable<?>[] getTypeParameters();
 
@@ -276,7 +277,7 @@ public abstract class Executable extends AccessibleObject
      * @throws GenericSignatureFormatError
      *     if the generic method signature does not conform to the format
      *     specified in
-     *     <cite>The Java&trade; Virtual Machine Specification</cite>
+     *     <cite>The Java Virtual Machine Specification</cite>
      * @throws TypeNotPresentException if any of the parameter
      *     types of the underlying executable refers to a non-existent type
      *     declaration
@@ -307,12 +308,12 @@ public abstract class Executable extends AccessibleObject
             final boolean realParamData = hasRealParameterData();
             final Type[] genericParamTypes = getGenericParameterTypes();
             final Type[] nonGenericParamTypes = getParameterTypes();
-            final Type[] out = new Type[nonGenericParamTypes.length];
-            final Parameter[] params = getParameters();
-            int fromidx = 0;
             // If we have real parameter data, then we use the
             // synthetic and mandate flags to our advantage.
             if (realParamData) {
+                final Type[] out = new Type[nonGenericParamTypes.length];
+                final Parameter[] params = getParameters();
+                int fromidx = 0;
                 for (int i = 0; i < out.length; i++) {
                     final Parameter param = params[i];
                     if (param.isSynthetic() || param.isImplicit()) {
@@ -325,6 +326,7 @@ public abstract class Executable extends AccessibleObject
                         fromidx++;
                     }
                 }
+                return out;
             } else {
                 // Otherwise, use the non-generic parameter data.
                 // Without method parameter reflection data, we have
@@ -334,7 +336,6 @@ public abstract class Executable extends AccessibleObject
                 return genericParamTypes.length == nonGenericParamTypes.length ?
                     genericParamTypes : nonGenericParamTypes;
             }
-            return out;
         }
     }
 
@@ -378,7 +379,7 @@ public abstract class Executable extends AccessibleObject
     private void verifyParameters(final Parameter[] parameters) {
         final int mask = Modifier.FINAL | Modifier.SYNTHETIC | Modifier.MANDATED;
 
-        if (getParameterTypes().length != parameters.length)
+        if (getParameterCount() != parameters.length)
             throw new MalformedParametersException("Wrong number of parameters in MethodParameters attribute");
 
         for (Parameter parameter : parameters) {
@@ -474,7 +475,7 @@ public abstract class Executable extends AccessibleObject
      * @throws GenericSignatureFormatError
      *     if the generic method signature does not conform to the format
      *     specified in
-     *     <cite>The Java&trade; Virtual Machine Specification</cite>
+     *     <cite>The Java Virtual Machine Specification</cite>
      * @throws TypeNotPresentException if the underlying executable's
      *     {@code throws} clause refers to a non-existent type declaration
      * @throws MalformedParameterizedTypeException if
@@ -515,8 +516,9 @@ public abstract class Executable extends AccessibleObject
      *
      * @return true if and only if this executable is a synthetic
      * construct as defined by
-     * <cite>The Java&trade; Language Specification</cite>.
+     * <cite>The Java Language Specification</cite>.
      * @jls 13.1 The Form of a Binary
+     * @jvms 4.6 Methods
      */
     public boolean isSynthetic() {
         return Modifier.isSynthetic(getModifiers());
@@ -543,6 +545,9 @@ public abstract class Executable extends AccessibleObject
      * are neither implicitly nor explicitly declared in source
      * ("synthetic") to the parameter list for a method.  See {@link
      * java.lang.reflect.Parameter} for more information.
+     *
+     * <p>Note that any annotations returned by this method are
+     * declaration annotations.
      *
      * @see java.lang.reflect.Parameter
      * @see java.lang.reflect.Parameter#getAnnotations
@@ -577,6 +582,7 @@ public abstract class Executable extends AccessibleObject
      * {@inheritDoc}
      * @throws NullPointerException  {@inheritDoc}
      */
+    @Override
     public <T extends Annotation> T getAnnotation(Class<T> annotationClass) {
         Objects.requireNonNull(annotationClass);
         return annotationClass.cast(declaredAnnotations().get(annotationClass));
@@ -584,6 +590,7 @@ public abstract class Executable extends AccessibleObject
 
     /**
      * {@inheritDoc}
+     *
      * @throws NullPointerException {@inheritDoc}
      */
     @Override
@@ -596,6 +603,7 @@ public abstract class Executable extends AccessibleObject
     /**
      * {@inheritDoc}
      */
+    @Override
     public Annotation[] getDeclaredAnnotations()  {
         return AnnotationParser.toArray(declaredAnnotations());
     }
@@ -692,8 +700,29 @@ public abstract class Executable extends AccessibleObject
                         getConstantPool(getDeclaringClass()),
                 this,
                 getDeclaringClass(),
-                getDeclaringClass(),
+                parameterize(getDeclaringClass()),
                 TypeAnnotation.TypeAnnotationTarget.METHOD_RECEIVER);
+    }
+
+    Type parameterize(Class<?> c) {
+        Class<?> ownerClass = c.getDeclaringClass();
+        TypeVariable<?>[] typeVars = c.getTypeParameters();
+
+        // base case, static nested classes, according to JLS 8.1.3, has no
+        // enclosing instance, therefore its owner is not generified.
+        if (ownerClass == null || Modifier.isStatic(c.getModifiers())) {
+            if (typeVars.length == 0)
+                return c;
+            else
+                return ParameterizedTypeImpl.make(c, typeVars, null);
+        }
+
+        // Resolve owner
+        Type ownerType = parameterize(ownerClass);
+        if (ownerType instanceof Class<?> && typeVars.length == 0) // We have yet to encounter type parameters
+            return c;
+        else
+            return ParameterizedTypeImpl.make(c, typeVars, ownerType);
     }
 
     /**
@@ -746,5 +775,4 @@ public abstract class Executable extends AccessibleObject
                 getGenericExceptionTypes(),
                 TypeAnnotation.TypeAnnotationTarget.THROWS);
     }
-
 }

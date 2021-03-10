@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 1997, 2018, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 1997, 2020, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -131,10 +131,12 @@ import java.io.Serializable;
  * passed to a static factory method result in {@code IllegalArgumentException}.
  * <li>The iteration order of mappings is unspecified and is subject to change.
  * <li>They are <a href="../lang/doc-files/ValueBased.html">value-based</a>.
- * Callers should make no assumptions about the identity of the returned instances.
- * Factories are free to create new instances or reuse existing ones. Therefore,
- * identity-sensitive operations on these instances (reference equality ({@code ==}),
- * identity hash code, and synchronization) are unreliable and should be avoided.
+ * Programmers should treat instances that are {@linkplain #equals(Object) equal}
+ * as interchangeable and should not use them for synchronization, or
+ * unpredictable behavior may occur. For example, in a future release,
+ * synchronization may fail. Callers should make no assumptions
+ * about the identity of the returned instances. Factories are free to
+ * create new instances or reuse existing ones.
  * <li>They are serialized as specified on the
  * <a href="{@docRoot}/serialized-form.html#java.util.CollSer">Serialized Form</a>
  * page.
@@ -732,8 +734,7 @@ public interface Map<K, V> {
      * {@code null}, else returns the current value.
      *
      * @implSpec
-     * The default implementation is equivalent to, for this {@code
-     * map}:
+     * The default implementation is equivalent to, for this {@code map}:
      *
      * <pre> {@code
      * V v = map.get(key);
@@ -830,7 +831,7 @@ public interface Map<K, V> {
      * The default implementation is equivalent to, for this {@code map}:
      *
      * <pre> {@code
-     * if (map.containsKey(key) && Objects.equals(map.get(key), value)) {
+     * if (map.containsKey(key) && Objects.equals(map.get(key), oldValue)) {
      *     map.put(key, newValue);
      *     return true;
      * } else
@@ -1108,23 +1109,17 @@ public interface Map<K, V> {
      *
      * @implSpec
      * The default implementation is equivalent to performing the following
-     * steps for this {@code map}, then returning the current value or
-     * {@code null} if absent:
+     * steps for this {@code map}:
      *
      * <pre> {@code
      * V oldValue = map.get(key);
      * V newValue = remappingFunction.apply(key, oldValue);
-     * if (oldValue != null) {
-     *    if (newValue != null)
-     *       map.put(key, newValue);
-     *    else
-     *       map.remove(key);
-     * } else {
-     *    if (newValue != null)
-     *       map.put(key, newValue);
-     *    else
-     *       return null;
+     * if (newValue != null) {
+     *     map.put(key, newValue);
+     * } else if (oldValue != null || map.containsKey(key)) {
+     *     map.remove(key);
      * }
+     * return newValue;
      * }</pre>
      *
      * <p>The default implementation makes no guarantees about detecting if the
@@ -1288,7 +1283,7 @@ public interface Map<K, V> {
      */
     @SuppressWarnings("unchecked")
     static <K, V> Map<K, V> of() {
-        return (Map<K,V>) ImmutableCollections.MapN.EMPTY_MAP;
+        return (Map<K,V>) ImmutableCollections.EMPTY_MAP;
     }
 
     /**
@@ -1606,7 +1601,7 @@ public interface Map<K, V> {
     static <K, V> Map<K, V> ofEntries(Entry<? extends K, ? extends V>... entries) {
         if (entries.length == 0) { // implicit null check of entries array
             @SuppressWarnings("unchecked")
-            var map = (Map<K,V>) ImmutableCollections.MapN.EMPTY_MAP;
+            var map = (Map<K,V>) ImmutableCollections.EMPTY_MAP;
             return map;
         } else if (entries.length == 1) {
             // implicit null check of the array slot
@@ -1637,10 +1632,12 @@ public interface Map<K, V> {
      * on a returned {@code Entry} result in {@code UnsupportedOperationException}.
      * <li>They are not serializable.
      * <li>They are <a href="../lang/doc-files/ValueBased.html">value-based</a>.
-     * Callers should make no assumptions about the identity of the returned instances.
-     * This method is free to create new instances or reuse existing ones. Therefore,
-     * identity-sensitive operations on these instances (reference equality ({@code ==}),
-     * identity hash code, and synchronization) are unreliable and should be avoided.
+     * Programmers should treat instances that are {@linkplain #equals(Object) equal}
+     * as interchangeable and should not use them for synchronization, or
+     * unpredictable behavior may occur. For example, in a future release,
+     * synchronization may fail. Callers should make no assumptions
+     * about the identity of the returned instances. This method is free to
+     * create new instances or reuse existing ones.
      * </ul>
      *
      * @apiNote

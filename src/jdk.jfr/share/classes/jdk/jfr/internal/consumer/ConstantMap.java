@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2016, 2019, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2016, 2020, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -25,12 +25,16 @@
 
 package jdk.jfr.internal.consumer;
 
+import jdk.jfr.internal.LogLevel;
+import jdk.jfr.internal.LogTag;
+import jdk.jfr.internal.Logger;
+
 import jdk.jfr.internal.LongMap;
 
 /**
  * Holds mapping between a set of keys and their corresponding object.
  *
- * If the type is a known type, i.e. {@link RecordedThread}, an
+ * If the type is a known type, i.e. {@link jdk.jfr.consumer.RecordedThread}, an
  * {@link ObjectFactory} can be supplied which will instantiate a typed object.
  */
 final class ConstantMap {
@@ -90,14 +94,14 @@ final class ConstantMap {
             return new Reference(this, id);
         }
 
-        // should always have a value
+        // should ideally always have a value
         Object value = objects.get(id);
         if (value == null) {
-            // unless is 0 which is used to represent null
-            if (id == 0) {
-                return null;
+            // unless id is 0 which is used to represent null
+            if (id != 0) {
+                Logger.log(LogTag.JFR_SYSTEM_PARSER, LogLevel.INFO, "Missing object id=" + id + " in pool " + name + ". All ids should reference an object");
             }
-            throw new InternalError("Missing object id=" + id + " in pool " + name + ". All ids should reference object");
+            return null;
         }
 
         // id is resolved (but not the whole pool)
@@ -152,6 +156,9 @@ final class ConstantMap {
     }
 
     public void put(long key, Object value) {
+        if (objects.hasKey(key)) {
+            objects.clearId(key);
+        }
         objects.put(key, value);
     }
 

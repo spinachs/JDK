@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2016, 2019, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2016, 2020, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -35,6 +35,7 @@ import java.util.Optional;
 import java.util.function.Function;
 
 import jdk.internal.access.SharedSecrets;
+import jdk.internal.util.StaticProperty;
 
 /**
  * Filter classes, array lengths, and graph metrics during deserialization.
@@ -63,7 +64,7 @@ import jdk.internal.access.SharedSecrets;
  * {@link Status#UNDECIDED UNDECIDED}.
  * Filters should be designed for the specific use case and expected types.
  * A filter designed for a particular use may be passed a class that is outside
- * of the scope of the filter. If the purpose of the filter is to black-list classes
+ * of the scope of the filter. If the purpose of the filter is to reject classes
  * then it can reject a candidate class that matches and report UNDECIDED for others.
  * A filter may be called with class equals {@code null}, {@code arrayLength} equal -1,
  * the depth, number of references, and stream size and return a status
@@ -205,15 +206,16 @@ public interface ObjectInputFilter {
      * <p>
      * The filter is configured during the initialization of the {@code ObjectInputFilter.Config}
      * class. For example, by calling {@link #getSerialFilter() Config.getSerialFilter}.
-     * If the system property {@systemProperty jdk.serialFilter} is defined, it is used
-     * to configure the filter.
-     * If the system property is not defined, and the {@link java.security.Security}
-     * property {@code jdk.serialFilter} is defined then it is used to configure the filter.
-     * Otherwise, the filter is not configured during initialization.
+     * If the Java virtual machine is started with the system property
+     * {@systemProperty jdk.serialFilter}, its value is used to configure the filter.
+     * If the system property is not defined, and the {@link java.security.Security} property
+     * {@code jdk.serialFilter} is defined then it is used to configure the filter.
+     * Otherwise, the filter is not configured during initialization and
+     * can be set with {@link #setSerialFilter(ObjectInputFilter) Config.setSerialFilter}.
+     * Setting the {@code jdk.serialFilter} with {@link System#setProperty(String, String)
+     * System.setProperty} <em>does not set the filter</em>.
      * The syntax for each property is the same as for the
      * {@link #createFilter(String) createFilter} method.
-     * If a filter is not configured, it can be set with
-     * {@link #setSerialFilter(ObjectInputFilter) Config.setSerialFilter}.
      *
      * @since 9
      */
@@ -256,7 +258,7 @@ public interface ObjectInputFilter {
         static {
             configuredFilter = AccessController
                     .doPrivileged((PrivilegedAction<ObjectInputFilter>) () -> {
-                        String props = System.getProperty(SERIAL_FILTER_PROPNAME);
+                        String props = StaticProperty.jdkSerialFilter();
                         if (props == null) {
                             props = Security.getProperty(SERIAL_FILTER_PROPNAME);
                         }

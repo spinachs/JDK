@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2016, 2019, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2016, 2020, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -96,13 +96,12 @@ public class VMProps implements Callable<Map<String, String>> {
         // vm.hasSA is "true" if the VM contains the serviceability agent
         // and jhsdb.
         map.put("vm.hasSA", this::vmHasSA);
-        // vm.hasSAandCanAttach is "true" if the VM contains the serviceability agent
-        // and jhsdb and it can attach to the VM.
-        map.put("vm.hasSAandCanAttach", this::vmHasSAandCanAttach);
         // vm.hasJFR is "true" if JFR is included in the build of the VM and
         // so tests can be executed.
         map.put("vm.hasJFR", this::vmHasJFR);
+        map.put("vm.jvmti", this::vmHasJVMTI);
         map.put("vm.cpu.features", this::cpuFeatures);
+        map.put("vm.pageSize", this::vmPageSize);
         map.put("vm.rtm.cpu", this::vmRTMCPU);
         map.put("vm.rtm.compiler", this::vmRTMCompiler);
         map.put("vm.aot", this::vmAOT);
@@ -116,8 +115,9 @@ public class VMProps implements Callable<Map<String, String>> {
         map.put("vm.compiler1.enabled", this::isCompiler1Enabled);
         map.put("vm.compiler2.enabled", this::isCompiler2Enabled);
         map.put("docker.support", this::dockerSupport);
+        map.put("vm.musl", this::isMusl);
         map.put("release.implementor", this::implementor);
-        map.put("test.vm.gc.nvdimm", this::isNvdimmTestEnabled);
+        map.put("jdk.containerized", this::jdkContainerized);
         vmGC(map); // vm.gc.X = true/false
         vmOptFinalFlags(map);
 
@@ -239,18 +239,17 @@ public class VMProps implements Callable<Map<String, String>> {
             return "false";
         }
 
-        switch (GC.selected()) {
-            case Serial:
-            case Parallel:
-            case G1:
-                // These GCs are supported with JVMCI
-                return "true";
-            default:
-                break;
+        // Not all GCs have full JVMCI support
+        if (!WB.isJVMCISupportedByGC()) {
+          return "false";
         }
 
-        // Every other GC is not supported
-        return "false";
+        // Interpreted mode cannot enable JVMCI
+        if (vmCompMode().equals("Xint")) {
+          return "false";
+        }
+
+        return "true";
     }
 
     /**
@@ -276,13 +275,16 @@ public class VMProps implements Callable<Map<String, String>> {
      * Example vm.gc.G1=true means:
      *    VM supports G1
      *    User either set G1 explicitely (-XX:+UseG1GC) or did not set any GC
+     *    G1 can be selected, i.e. it doesn't conflict with other VM flags
      *
      * @param map - property-value pairs
      */
     protected void vmGC(SafeMap map) {
+        var isJVMCIEnabled = Compiler.isJVMCIEnabled();
         for (GC gc: GC.values()) {
             map.put("vm.gc." + gc.name(),
                     () -> "" + (gc.isSupported()
+                            && (!isJVMCIEnabled || gc.isSupportedByJVMCICompiler())
                             && (gc.isSelected() || GC.isSelectedErgonomically())));
         }
     }
@@ -319,24 +321,18 @@ public class VMProps implements Callable<Map<String, String>> {
     }
 
     /**
-     * @return "true" if VM has a serviceability agent and it can
-     * attach to the VM.
-     */
-    protected String vmHasSAandCanAttach() {
-        try {
-            return "" + Platform.shouldSAAttach();
-        } catch (IOException e) {
-            e.printStackTrace();
-            return errorWithMessage("Checking whether SA can attach to the VM failed.:" + e);
-        }
-    }
-
-    /**
      * @return "true" if the VM is compiled with Java Flight Recorder (JFR)
      * support.
      */
     protected String vmHasJFR() {
         return "" + WB.isJFRIncludedInVmBuild();
+    }
+
+    /**
+     * @return "true" if the VM is compiled with JVMTI
+     */
+    protected String vmHasJVMTI() {
+        return "" + WB.isJVMTIIncluded();
     }
 
     /**
@@ -427,6 +423,13 @@ public class VMProps implements Callable<Map<String, String>> {
     }
 
     /**
+     * @return System page size in bytes.
+     */
+    protected String vmPageSize() {
+        return "" + WB.getVMPageSize();
+    }
+
+    /**
      * Check if Graal is used as JIT compiler.
      *
      * @return true if Graal is used as JIT compiler.
@@ -496,6 +499,15 @@ public class VMProps implements Callable<Map<String, String>> {
         return (p.exitValue() == 0);
     }
 
+    /**
+     * Checks musl libc.
+     *
+     * @return true if musl libc is used.
+     */
+    protected String isMusl() {
+        return Boolean.toString(WB.getLibcName().contains("musl"));
+    }
+
     private String implementor() {
         try (InputStream in = new BufferedInputStream(new FileInputStream(
                 System.getProperty("java.home") + "/release"))) {
@@ -512,8 +524,8 @@ public class VMProps implements Callable<Map<String, String>> {
         }
     }
 
-    private String isNvdimmTestEnabled() {
-        String isEnabled = System.getenv("TEST_VM_GC_NVDIMM");
+    private String jdkContainerized() {
+        String isEnabled = System.getenv("TEST_JDK_CONTAINERIZED");
         return "" + "true".equalsIgnoreCase(isEnabled);
     }
 

@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2006, 2019, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2006, 2021, Oracle and/or its affiliates. All rights reserved.
  */
 /*
  * Licensed to the Apache Software Foundation (ASF) under one or more
@@ -20,6 +20,7 @@
 
 package com.sun.org.apache.xml.internal.serializer;
 
+import com.sun.org.apache.xml.internal.serializer.dom3.DOMConstants;
 import com.sun.org.apache.xml.internal.serializer.utils.MsgKey;
 import com.sun.org.apache.xml.internal.serializer.utils.Utils;
 import com.sun.org.apache.xml.internal.serializer.utils.WrappedRuntimeException;
@@ -51,7 +52,7 @@ import org.xml.sax.SAXException;
  * serializers (xml, html, text ...) that write output to a stream.
  *
  * @xsl.usage internal
- * @LastModified: Aug 2019
+ * @LastModified: Jan 2021
  */
 abstract public class ToStream extends SerializerBase {
 
@@ -492,8 +493,10 @@ abstract public class ToStream extends SerializerBase {
                 if (OutputPropertiesFactory.S_KEY_INDENT_AMOUNT.equals(name)) {
                     setIndentAmount(Integer.parseInt(val));
                 } else if (OutputKeys.INDENT.equals(name)) {
-                    boolean b = val.endsWith("yes") ? true : false;
-                    m_doIndent = b;
+                    m_doIndent = val.endsWith("yes");
+                } else if ((DOMConstants.NS_IS_STANDALONE)
+                        .equals(name)) {
+                    m_isStandalone = val.endsWith("yes");
                 }
 
                 break;
@@ -1354,7 +1357,7 @@ abstract public class ToStream extends SerializerBase {
         // characters to read from array is 0.
         // Section 7.6.1 of XSLT 1.0 (http://www.w3.org/TR/xslt#value-of) suggest no text node
         // is created if string is empty.
-        if (length == 0 || (isInEntityRef()))
+        if (length == 0 || (isInEntityRef() && !m_expandDTDEntities))
             return;
 
         final boolean shouldNotFormat = !shouldFormatOutput();
@@ -1668,7 +1671,7 @@ abstract public class ToStream extends SerializerBase {
      */
     public void characters(String s) throws org.xml.sax.SAXException
     {
-        if (isInEntityRef())
+        if (isInEntityRef() && !m_expandDTDEntities)
             return;
         final int length = s.length();
         if (length > m_charsBuff.length)
@@ -2514,7 +2517,7 @@ abstract public class ToStream extends SerializerBase {
             m_inExternalDTD = true;
 
         // if this is not the magic [dtd] name
-        if (!m_inExternalDTD) {
+        if (!m_expandDTDEntities && !m_inExternalDTD) {
             // if it's not in nested entity reference
             if (!isInEntityRef()) {
                 if (shouldFormatOutput()) {

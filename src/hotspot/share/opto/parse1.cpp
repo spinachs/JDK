@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 1997, 2019, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 1997, 2021, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -435,6 +435,7 @@ Parse::Parse(JVMState* caller, ciMethod* parse_method, float expected_uses)
     C->set_parsed_irreducible_loop(true);
   }
 #endif
+  C->set_has_loops(C->has_loops() || method()->has_loops());
 
   if (_expected_uses <= 0) {
     _prof_factor = 1;
@@ -481,9 +482,6 @@ Parse::Parse(JVMState* caller, ciMethod* parse_method, float expected_uses)
   }
   // Accumulate total sum of decompilations, also.
   C->set_decompile_count(C->decompile_count() + md->decompile_count());
-
-  _count_invocations = C->do_count_invocations();
-  _method_data_update = C->do_method_data_update();
 
   if (log != NULL && method()->has_exception_handlers()) {
     log->elem("observe that='has_exception_handlers'");
@@ -672,7 +670,7 @@ void Parse::do_all_blocks() {
             // Need correct bci for predicate.
             // It is fine to set it here since do_one_block() will set it anyway.
             set_parse_bci(block->start());
-            add_predicate();
+            add_empty_predicates();
           }
           // Add new region for back branches.
           int edges = block->pred_count() - block->preds_parsed() + 1; // +1 for original region
@@ -817,7 +815,7 @@ JVMState* Compile::build_start_state(StartNode* start, const TypeFunc* tf) {
   int        arg_size = tf->domain()->cnt();
   int        max_size = MAX2(arg_size, (int)tf->range()->cnt());
   JVMState*  jvms     = new (this) JVMState(max_size - TypeFunc::Parms);
-  SafePointNode* map  = new SafePointNode(max_size, NULL);
+  SafePointNode* map  = new SafePointNode(max_size, jvms);
   record_for_igvn(map);
   assert(arg_size == TypeFunc::Parms + (is_osr_compilation() ? 1 : method()->arg_size()), "correct arg_size");
   Node_Notes* old_nn = default_node_notes();
@@ -841,7 +839,6 @@ JVMState* Compile::build_start_state(StartNode* start, const TypeFunc* tf) {
   }
   assert(jvms->argoff() == TypeFunc::Parms, "parser gets arguments here");
   set_default_node_notes(old_nn);
-  map->set_jvms(jvms);
   jvms->set_map(map);
   return jvms;
 }
@@ -1076,8 +1073,7 @@ void Parse::do_exits() {
       // The exiting JVM state is otherwise a copy of the calling JVMS.
       JVMState* caller = kit.jvms();
       JVMState* ex_jvms = caller->clone_shallow(C);
-      ex_jvms->set_map(kit.clone_map());
-      ex_jvms->map()->set_jvms(ex_jvms);
+      ex_jvms->bind_map(kit.clone_map());
       ex_jvms->set_bci(   InvocationEntryBci);
       kit.set_jvms(ex_jvms);
       if (do_synch) {
@@ -1096,8 +1092,7 @@ void Parse::do_exits() {
       ex_map = kit.make_exception_state(ex_oop);
       assert(ex_jvms->same_calls_as(ex_map->jvms()), "sanity");
       // Pop the last vestige of this method:
-      ex_map->set_jvms(caller->clone_shallow(C));
-      ex_map->jvms()->set_map(ex_map);
+      caller->clone_shallow(C)->bind_map(ex_map);
       _exits.push_exception_state(ex_map);
     }
     assert(_exits.map() == normal_map, "keep the same return state");
@@ -1227,10 +1222,6 @@ void Parse::do_method_entry() {
   // Feed profiling data for parameters to the type system so it can
   // propagate it as speculative types
   record_profiled_parameters_for_speculation();
-
-  if (depth() == 1) {
-    increment_and_test_invocation_counter(Tier2CompileThreshold);
-  }
 }
 
 //------------------------------init_blocks------------------------------------
@@ -1293,9 +1284,11 @@ void Parse::Block::init_graph(Parse* outer) {
     _successors[i] = block2;
 
     // Accumulate pred info for the other block, too.
-    if (i < ns) {
-      block2->_pred_count++;
-    } else {
+    // Note: We also need to set _pred_count for exception blocks since they could
+    // also have normal predecessors (reached without athrow by an explicit jump).
+    // This also means that next_path_num can be called along exception paths.
+    block2->_pred_count++;
+    if (i >= ns) {
       block2->_is_handler = true;
     }
 
@@ -1310,10 +1303,6 @@ void Parse::Block::init_graph(Parse* outer) {
     }
     #endif
   }
-
-  // Note: We never call next_path_num along exception paths, so they
-  // never get processed as "ready".  Also, the input phis of exception
-  // handlers get specially processed, so that
 }
 
 //---------------------------successor_for_bci---------------------------------
@@ -1601,6 +1590,11 @@ void Parse::merge_new_path(int target_bci) {
 // Merge the current mapping into the basic block starting at bci
 // The ex_oop must be pushed on the stack, unlike throw_to_exit.
 void Parse::merge_exception(int target_bci) {
+#ifdef ASSERT
+  if (target_bci < bci()) {
+    C->set_exception_backedge();
+  }
+#endif
   assert(sp() == 1, "must have only the throw exception on the stack");
   Block* target = successor_for_bci(target_bci);
   if (target == NULL) { handle_missing_successor(target_bci); return; }
@@ -1654,7 +1648,7 @@ void Parse::merge_common(Parse::Block* target, int pnum) {
         if (target->start() == 0) {
           // Add loop predicate for the special case when
           // there are backbranches to the method entry.
-          add_predicate();
+          add_empty_predicates();
         }
       }
       // Add a Region to start the new basic block.  Phis will be added
@@ -2250,24 +2244,7 @@ void Parse::return_current(Node* value) {
 
 //------------------------------add_safepoint----------------------------------
 void Parse::add_safepoint() {
-  // See if we can avoid this safepoint.  No need for a SafePoint immediately
-  // after a Call (except Leaf Call) or another SafePoint.
-  Node *proj = control();
-  bool add_poll_param = SafePointNode::needs_polling_address_input();
-  uint parms = add_poll_param ? TypeFunc::Parms+1 : TypeFunc::Parms;
-  if( proj->is_Proj() ) {
-    Node *n0 = proj->in(0);
-    if( n0->is_Catch() ) {
-      n0 = n0->in(0)->in(0);
-      assert( n0->is_Call(), "expect a call here" );
-    }
-    if( n0->is_Call() ) {
-      if( n0->as_Call()->guaranteed_safepoint() )
-        return;
-    } else if( n0->is_SafePoint() && n0->req() >= parms ) {
-      return;
-    }
-  }
+  uint parms = TypeFunc::Parms+1;
 
   // Clear out dead values from the debug info.
   kill_dead_locals();
@@ -2301,17 +2278,11 @@ void Parse::add_safepoint() {
   sfpnt->init_req(TypeFunc::FramePtr , top() );
 
   // Create a node for the polling address
-  if( add_poll_param ) {
-    Node *polladr;
-    if (SafepointMechanism::uses_thread_local_poll()) {
-      Node *thread = _gvn.transform(new ThreadLocalNode());
-      Node *polling_page_load_addr = _gvn.transform(basic_plus_adr(top(), thread, in_bytes(Thread::polling_page_offset())));
-      polladr = make_load(control(), polling_page_load_addr, TypeRawPtr::BOTTOM, T_ADDRESS, Compile::AliasIdxRaw, MemNode::unordered);
-    } else {
-      polladr = ConPNode::make((address)os::get_polling_page());
-    }
-    sfpnt->init_req(TypeFunc::Parms+0, _gvn.transform(polladr));
-  }
+  Node *polladr;
+  Node *thread = _gvn.transform(new ThreadLocalNode());
+  Node *polling_page_load_addr = _gvn.transform(basic_plus_adr(top(), thread, in_bytes(Thread::polling_page_offset())));
+  polladr = make_load(control(), polling_page_load_addr, TypeRawPtr::BOTTOM, T_ADDRESS, Compile::AliasIdxRaw, MemNode::unordered);
+  sfpnt->init_req(TypeFunc::Parms+0, _gvn.transform(polladr));
 
   // Fix up the JVM State edges
   add_safepoint_edges(sfpnt);

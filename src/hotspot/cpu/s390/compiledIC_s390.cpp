@@ -1,6 +1,6 @@
 /*
  * Copyright (c) 2016, 2019, Oracle and/or its affiliates. All rights reserved.
- * Copyright (c) 2016, 2019, SAP SE. All rights reserved.
+ * Copyright (c) 2016, 2019 SAP SE. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -54,7 +54,7 @@ address CompiledStaticCall::emit_to_interp_stub(CodeBuffer &cbuf, address mark/*
   // That's why we must use the macroassembler to generate a stub.
   MacroAssembler _masm(&cbuf);
 
-  address stub = __ start_a_stub(Compile::MAX_stubs_size);
+  address stub = __ start_a_stub(CompiledStaticCall::to_interp_stub_size());
   if (stub == NULL) {
     return NULL;  // CodeBuffer::expand failed.
   }

@@ -1,6 +1,6 @@
 /*
  * Copyright (c) 2019, Oracle and/or its affiliates. All rights reserved.
- * Copyright (c) 2018, 2019, SAP SE. All rights reserved.
+ * Copyright (c) 2018, 2019 SAP SE. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -35,6 +35,7 @@
 #include "gc/g1/g1ThreadLocalData.hpp"
 #include "gc/g1/heapRegion.hpp"
 #include "interpreter/interp_masm.hpp"
+#include "runtime/jniHandles.hpp"
 #include "runtime/sharedRuntime.hpp"
 #ifdef COMPILER1
 #include "c1/c1_LIRAssembler.hpp"
@@ -400,11 +401,11 @@ void G1BarrierSetAssembler::resolve_jobject(MacroAssembler* masm, Register value
 
   __ z_tmll(tmp1, JNIHandles::weak_tag_mask); // Test for jweak tag.
   __ z_braz(Lnot_weak);
-  __ verify_oop(value);
+  __ verify_oop(value, FILE_AND_LINE);
   DecoratorSet decorators = IN_NATIVE | ON_PHANTOM_OOP_REF;
   g1_write_barrier_pre(masm, decorators, (const Address*)NULL, value, noreg, tmp1, tmp2, true);
   __ bind(Lnot_weak);
-  __ verify_oop(value);
+  __ verify_oop(value, FILE_AND_LINE);
   __ bind(Ldone);
 }
 

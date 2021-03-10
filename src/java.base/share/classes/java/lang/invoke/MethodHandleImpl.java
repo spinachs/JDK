@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2008, 2018, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2008, 2020, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -27,7 +27,7 @@ package java.lang.invoke;
 
 import jdk.internal.access.JavaLangInvokeAccess;
 import jdk.internal.access.SharedSecrets;
-import jdk.internal.org.objectweb.asm.AnnotationVisitor;
+import jdk.internal.invoke.NativeEntryPoint;
 import jdk.internal.org.objectweb.asm.ClassWriter;
 import jdk.internal.org.objectweb.asm.MethodVisitor;
 import jdk.internal.reflect.CallerSensitive;
@@ -40,6 +40,7 @@ import sun.invoke.util.ValueConversions;
 import sun.invoke.util.VerifyType;
 import sun.invoke.util.Wrapper;
 
+import java.lang.invoke.MethodHandles.Lookup;
 import java.lang.reflect.Array;
 import java.nio.ByteOrder;
 import java.util.Arrays;
@@ -695,7 +696,7 @@ abstract class MethodHandleImpl {
 
     // Intrinsified by C2. Counters are used during parsing to calculate branch frequencies.
     @Hidden
-    @jdk.internal.HotSpotIntrinsicCandidate
+    @jdk.internal.vm.annotation.IntrinsicCandidate
     static boolean profileBoolean(boolean result, int[] counters) {
         // Profile is int[2] where [0] and [1] correspond to false and true occurrences respectively.
         int idx = result ? 1 : 0;
@@ -710,7 +711,7 @@ abstract class MethodHandleImpl {
 
     // Intrinsified by C2. Returns true if obj is a compile-time constant.
     @Hidden
-    @jdk.internal.HotSpotIntrinsicCandidate
+    @jdk.internal.vm.annotation.IntrinsicCandidate
     static boolean isCompileConstant(Object obj) {
         return false;
     }
@@ -840,21 +841,9 @@ abstract class MethodHandleImpl {
             return (asTypeCache = wrapper);
         }
 
-        // Customize target if counting happens for too long.
-        private int invocations = CUSTOMIZE_THRESHOLD;
-        private void maybeCustomizeTarget() {
-            int c = invocations;
-            if (c >= 0) {
-                if (c == 1) {
-                    target.customize();
-                }
-                invocations = c - 1;
-            }
-        }
-
         boolean countDown() {
             int c = count;
-            maybeCustomizeTarget();
+            target.maybeCustomize(); // customize if counting happens for too long
             if (c <= 1) {
                 // Try to limit number of updates. MethodHandle.updateForm() doesn't guarantee LF update visibility.
                 if (isCounting) {
@@ -871,12 +860,15 @@ abstract class MethodHandleImpl {
 
         @Hidden
         static void maybeStopCounting(Object o1) {
-             CountingWrapper wrapper = (CountingWrapper) o1;
+             final CountingWrapper wrapper = (CountingWrapper) o1;
              if (wrapper.countDown()) {
                  // Reached invocation threshold. Replace counting behavior with a non-counting one.
-                 LambdaForm lform = wrapper.nonCountingFormProducer.apply(wrapper.target);
-                 lform.compileToBytecode(); // speed up warmup by avoiding LF interpretation again after transition
-                 wrapper.updateForm(lform);
+                 wrapper.updateForm(new Function<>() {
+                     public LambdaForm apply(LambdaForm oldForm) {
+                         LambdaForm lform = wrapper.nonCountingFormProducer.apply(wrapper.target);
+                         lform.compileToBytecode(); // speed up warmup by avoiding LF interpretation again after transition
+                         return lform;
+                     }});
              }
         }
 
@@ -1157,10 +1149,24 @@ abstract class MethodHandleImpl {
             return restoreToType(bccInvoker.bindTo(vamh), mh, hostClass);
         }
 
-        private static MethodHandle makeInjectedInvoker(Class<?> hostClass) {
+        private static MethodHandle makeInjectedInvoker(Class<?> targetClass) {
             try {
-                Class<?> invokerClass = UNSAFE.defineAnonymousClass(hostClass, INJECTED_INVOKER_TEMPLATE, null);
-                assert checkInjectedInvoker(hostClass, invokerClass);
+                /*
+                 * The invoker class defined to the same class loader as the lookup class
+                 * but in an unnamed package so that the class bytes can be cached and
+                 * reused for any @CSM.
+                 *
+                 * @CSM must be public and exported if called by any module.
+                 */
+                String name = targetClass.getName() + "$$InjectedInvoker";
+                if (targetClass.isHidden()) {
+                    // use the original class name
+                    name = name.replace('/', '_');
+                }
+                Class<?> invokerClass = new Lookup(targetClass)
+                        .makeHiddenClassDefiner(name, INJECTED_INVOKER_TEMPLATE)
+                        .defineClass(true);
+                assert checkInjectedInvoker(targetClass, invokerClass);
                 return IMPL_LOOKUP.findStatic(invokerClass, "invoke_V", INVOKER_MT);
             } catch (ReflectiveOperationException ex) {
                 throw uncaughtException(ex);
@@ -1255,10 +1261,6 @@ abstract class MethodHandleImpl {
             MethodVisitor mv = cw.visitMethod(ACC_STATIC, "invoke_V",
                           "(Ljava/lang/invoke/MethodHandle;[Ljava/lang/Object;)Ljava/lang/Object;",
                           null, null);
-
-            // Suppress invoker method in stack traces.
-            AnnotationVisitor av0 = mv.visitAnnotation(InvokerBytecodeGenerator.HIDDEN_SIG, true);
-            av0.visitEnd();
 
             mv.visitCode();
             mv.visitVarInsn(ALOAD, 0);
@@ -1754,80 +1756,49 @@ abstract class MethodHandleImpl {
             }
 
             @Override
-            public byte[] generateDirectMethodHandleHolderClassBytes(
-                    String className, MethodType[] methodTypes, int[] types) {
-                return GenerateJLIClassesHelper
-                        .generateDirectMethodHandleHolderClassBytes(
-                                className, methodTypes, types);
+            public Map<String, byte[]> generateHolderClasses(Stream<String> traces) {
+                return GenerateJLIClassesHelper.generateHolderClasses(traces);
             }
 
             @Override
-            public byte[] generateDelegatingMethodHandleHolderClassBytes(
-                    String className, MethodType[] methodTypes) {
-                return GenerateJLIClassesHelper
-                        .generateDelegatingMethodHandleHolderClassBytes(
-                                className, methodTypes);
+            public VarHandle memoryAccessVarHandle(Class<?> carrier, boolean skipAlignmentMaskCheck, long alignmentMask,
+                                                   ByteOrder order) {
+                return VarHandles.makeMemoryAddressViewHandle(carrier, skipAlignmentMaskCheck, alignmentMask, order);
             }
 
             @Override
-            public Map.Entry<String, byte[]> generateConcreteBMHClassBytes(
-                    final String types) {
-                return GenerateJLIClassesHelper
-                        .generateConcreteBMHClassBytes(types);
+            public MethodHandle nativeMethodHandle(NativeEntryPoint nep, MethodHandle fallback) {
+                return NativeMethodHandle.make(nep, fallback);
             }
 
             @Override
-            public byte[] generateBasicFormsClassBytes(final String className) {
-                return GenerateJLIClassesHelper
-                        .generateBasicFormsClassBytes(className);
+            public VarHandle filterValue(VarHandle target, MethodHandle filterToTarget, MethodHandle filterFromTarget) {
+                return VarHandles.filterValue(target, filterToTarget, filterFromTarget);
             }
 
             @Override
-            public byte[] generateInvokersHolderClassBytes(final String className,
-                    MethodType[] invokerMethodTypes,
-                    MethodType[] callSiteMethodTypes) {
-                return GenerateJLIClassesHelper
-                        .generateInvokersHolderClassBytes(className,
-                                invokerMethodTypes, callSiteMethodTypes);
+            public VarHandle filterCoordinates(VarHandle target, int pos, MethodHandle... filters) {
+                return VarHandles.filterCoordinates(target, pos, filters);
             }
 
             @Override
-            public VarHandle memoryAddressViewVarHandle(Class<?> carrier, long alignmentMask,
-                                                        ByteOrder order, long offset, long[] strides) {
-                return VarHandles.makeMemoryAddressViewHandle(carrier, alignmentMask, order, offset, strides);
+            public VarHandle dropCoordinates(VarHandle target, int pos, Class<?>... valueTypes) {
+                return VarHandles.dropCoordinates(target, pos, valueTypes);
             }
 
             @Override
-            public Class<?> memoryAddressCarrier(VarHandle handle) {
-                return checkMemAccessHandle(handle).carrier();
+            public VarHandle permuteCoordinates(VarHandle target, List<Class<?>> newCoordinates, int... reorder) {
+                return VarHandles.permuteCoordinates(target, newCoordinates, reorder);
             }
 
             @Override
-            public long memoryAddressAlignmentMask(VarHandle handle) {
-                return checkMemAccessHandle(handle).alignmentMask;
+            public VarHandle collectCoordinates(VarHandle target, int pos, MethodHandle filter) {
+                return VarHandles.collectCoordinates(target, pos, filter);
             }
 
             @Override
-            public ByteOrder memoryAddressByteOrder(VarHandle handle) {
-                return checkMemAccessHandle(handle).be ?
-                        ByteOrder.BIG_ENDIAN : ByteOrder.LITTLE_ENDIAN;
-            }
-
-            @Override
-            public long memoryAddressOffset(VarHandle handle) {
-                return checkMemAccessHandle(handle).offset;
-            }
-
-            @Override
-            public long[] memoryAddressStrides(VarHandle handle) {
-                return checkMemAccessHandle(handle).strides();
-            }
-
-            private VarHandleMemoryAddressBase checkMemAccessHandle(VarHandle handle) {
-                if (!(handle instanceof VarHandleMemoryAddressBase)) {
-                    throw new IllegalArgumentException("Not a memory access varhandle: " + handle);
-                }
-                return (VarHandleMemoryAddressBase) handle;
+            public VarHandle insertCoordinates(VarHandle target, int pos, Object... values) {
+                return VarHandles.insertCoordinates(target, pos, values);
             }
         });
     }

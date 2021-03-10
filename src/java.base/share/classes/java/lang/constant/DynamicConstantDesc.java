@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2018, 2019, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2018, 2020, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -49,8 +49,8 @@ import static java.util.stream.Collectors.joining;
  * dynamic constant (one described in the constant pool with
  * {@code Constant_Dynamic_info}.)
  *
- * <p>Concrete subtypes of {@linkplain DynamicConstantDesc} must be
- * <a href="../doc-files/ValueBased.html">value-based</a>.
+ * <p>Concrete subtypes of {@linkplain DynamicConstantDesc} should be immutable
+ * and their behavior should not rely on object identity.
  *
  * @param <T> the type of the dynamic constant
  *
@@ -350,8 +350,8 @@ public abstract class DynamicConstantDesc<T>
      *
      * @param o the {@code DynamicConstantDesc} to compare to this
      *       {@code DynamicConstantDesc}
-     * @return {@code true} if the specified {@code DynamicConstantDesc} is
-     *      equals to this {@code DynamicConstantDesc}.
+     * @return {@code true} if the specified {@code DynamicConstantDesc}
+     *      is equal to this {@code DynamicConstantDesc}.
      *
      */
     @Override

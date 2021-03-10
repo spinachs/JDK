@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2015, 2018, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2015, 2020, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -258,9 +258,6 @@ final class StatusResponseManager {
      *
      * @return an unmodifiable {@code Map} containing the certificate and
      *      its usually
-     *
-     * @throws SSLHandshakeException if an unsupported
-     *      {@code CertStatusRequest} is provided.
      */
     Map<X509Certificate, byte[]> get(CertStatusRequestType type,
             CertStatusRequest request, X509Certificate[] chain, long delay,
@@ -483,7 +480,7 @@ final class StatusResponseManager {
          * and its corresponding CertId.
          *
          * @param subjectCert the certificate to be checked for revocation
-         * @param cid the CertId for {@code subjectCert}
+         * @param certId the CertId for {@code subjectCert}
          */
         StatusInfo(X509Certificate subjectCert, CertId certId) {
             cert = subjectCert;
@@ -530,7 +527,7 @@ final class StatusResponseManager {
     /**
      * Static nested class used as the data kept in the response cache.
      */
-    class ResponseCacheEntry {
+    static class ResponseCacheEntry {
         final OCSPResponse.ResponseStatus status;
         final byte[] ocspBytes;
         final Date nextUpdate;

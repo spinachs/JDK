@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 1997, 2019, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 1997, 2020, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -62,7 +62,6 @@ class ReservedSpace {
   ReservedSpace(size_t size, size_t preferred_page_size = 0);
   ReservedSpace(size_t size, size_t alignment, bool large,
                 char* requested_address = NULL);
-  ReservedSpace(size_t size, size_t alignment, bool large, bool executable);
 
   // Accessors
   char*  base()            const { return _base;      }
@@ -76,13 +75,12 @@ class ReservedSpace {
   void release();
 
   // Splitting
-  ReservedSpace first_part(size_t partition_size, size_t alignment,
-                           bool split = false, bool realloc = true);
+  // This splits the space into two spaces, the first part of which will be returned.
+  ReservedSpace first_part(size_t partition_size, size_t alignment);
   ReservedSpace last_part (size_t partition_size, size_t alignment);
 
   // These simply call the above using the default alignment.
-  inline ReservedSpace first_part(size_t partition_size,
-                                  bool split = false, bool realloc = true);
+  inline ReservedSpace first_part(size_t partition_size);
   inline ReservedSpace last_part (size_t partition_size);
 
   // Alignment
@@ -92,12 +90,14 @@ class ReservedSpace {
   bool contains(const void* p) const {
     return (base() <= ((char*)p)) && (((char*)p) < (base() + size()));
   }
+
+  static size_t actual_reserved_page_size(const ReservedSpace& rs);
 };
 
 ReservedSpace
-ReservedSpace::first_part(size_t partition_size, bool split, bool realloc)
+ReservedSpace::first_part(size_t partition_size)
 {
-  return first_part(partition_size, alignment(), split, realloc);
+  return first_part(partition_size, alignment());
 }
 
 ReservedSpace ReservedSpace::last_part(size_t partition_size)

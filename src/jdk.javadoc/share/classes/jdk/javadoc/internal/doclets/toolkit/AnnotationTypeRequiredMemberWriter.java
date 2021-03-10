@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2003, 2019, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2003, 2021, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -26,7 +26,6 @@
 package jdk.javadoc.internal.doclets.toolkit;
 
 import javax.lang.model.element.Element;
-import javax.lang.model.element.TypeElement;
 
 /**
  * The interface for writing annotation type required member output.
@@ -37,7 +36,7 @@ import javax.lang.model.element.TypeElement;
  *  deletion without notice.</b>
  */
 
-public interface AnnotationTypeRequiredMemberWriter {
+public interface AnnotationTypeRequiredMemberWriter extends MemberWriter {
 
     /**
      * Add the annotation type member tree header.
@@ -56,18 +55,17 @@ public interface AnnotationTypeRequiredMemberWriter {
     /**
      * Add the annotation type details tree header.
      *
-     * @param typeElement the annotation type being documented
+     * @return content tree for the annotation details header
      */
-    Content getAnnotationDetailsTreeHeader(TypeElement typeElement);
+    Content getAnnotationDetailsTreeHeader();
 
     /**
      * Get the annotation type documentation tree header.
      *
      * @param member the annotation type being documented
-     * @param annotationDetailsTree the content tree representing annotation type details
      * @return content tree for the annotation type documentation header
      */
-    Content getAnnotationDocTreeHeader(Element member, Content annotationDetailsTree);
+    Content getAnnotationDocTreeHeader(Element member);
 
     /**
      * Get the annotation type details tree.
@@ -77,14 +75,6 @@ public interface AnnotationTypeRequiredMemberWriter {
      * @return content tree for the annotation type details
      */
     Content getAnnotationDetails(Content annotationDetailsTreeHeader, Content annotationDetailsTree);
-
-    /**
-     * Get the annotation type documentation.
-     *
-     * @param annotationDocTree the content tree representing annotation type documentation
-     * @return content tree for the annotation type documentation
-     */
-    Content getAnnotationDoc(Content annotationDocTree);
 
     /**
      * Get the signature for the given member.
@@ -101,6 +91,14 @@ public interface AnnotationTypeRequiredMemberWriter {
      * @param annotationDocTree content tree to which the deprecated information will be added
      */
     void addDeprecated(Element member, Content annotationDocTree);
+
+    /**
+     * Add the preview output for the given member.
+     *
+     * @param member the member being documented
+     * @param annotationDocTree content tree to which the preview information will be added
+     */
+    void addPreview(Element member, Content contentTree);
 
     /**
      * Add the comments for the given member.

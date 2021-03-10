@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2003, 2019, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2003, 2020, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -730,7 +730,7 @@ public class Types {
          */
         public FunctionDescriptor findDescriptorInternal(TypeSymbol origin,
                 CompoundScope membersCache) throws FunctionDescriptorLookupError {
-            if (!origin.isInterface() || (origin.flags() & ANNOTATION) != 0) {
+            if (!origin.isInterface() || (origin.flags() & ANNOTATION) != 0 || origin.isSealed()) {
                 //t must be an interface
                 throw failure("not.a.functional.intf", origin);
             }
@@ -1629,32 +1629,71 @@ public class Types {
     }
 
     /**
-     * Is t is castable to s?<br>
+     * Is t castable to s?<br>
      * s is assumed to be an erased type.<br>
      * (not defined for Method and ForAll types).
      */
     public boolean isCastable(Type t, Type s, Warner warn) {
+        // if same type
         if (t == s)
             return true;
+        // if one of the types is primitive
         if (t.isPrimitive() != s.isPrimitive()) {
             t = skipTypeVars(t, false);
             return (isConvertible(t, s, warn)
                     || (s.isPrimitive() &&
                         isSubtype(boxedClass(s).type, t)));
         }
+        boolean result;
         if (warn != warnStack.head) {
             try {
                 warnStack = warnStack.prepend(warn);
                 checkUnsafeVarargsConversion(t, s, warn);
-                return isCastable.visit(t,s);
+                result = isCastable.visit(t,s);
             } finally {
                 warnStack = warnStack.tail;
             }
         } else {
-            return isCastable.visit(t,s);
+            result = isCastable.visit(t,s);
         }
+        if (result && t.hasTag(CLASS) && t.tsym.kind.matches(Kinds.KindSelector.TYP)
+                && s.hasTag(CLASS) && s.tsym.kind.matches(Kinds.KindSelector.TYP)
+                && (t.tsym.isSealed() || s.tsym.isSealed())) {
+            return (t.isCompound() || s.isCompound()) ?
+                    false :
+                    !areDisjoint((ClassSymbol)t.tsym, (ClassSymbol)s.tsym);
+        }
+        return result;
     }
     // where
+        private boolean areDisjoint(ClassSymbol ts, ClassSymbol ss) {
+            if (isSubtype(erasure(ts.type), erasure(ss.type))) {
+                return false;
+            }
+            // if both are classes or both are interfaces, shortcut
+            if (ts.isInterface() == ss.isInterface() && isSubtype(erasure(ss.type), erasure(ts.type))) {
+                return false;
+            }
+            if (ts.isInterface() && !ss.isInterface()) {
+                /* so ts is interface but ss is a class
+                 * an interface is disjoint from a class if the class is disjoint form the interface
+                 */
+                return areDisjoint(ss, ts);
+            }
+            // a final class that is not subtype of ss is disjoint
+            if (!ts.isInterface() && ts.isFinal()) {
+                return true;
+            }
+            // if at least one is sealed
+            if (ts.isSealed() || ss.isSealed()) {
+                // permitted subtypes have to be disjoint with the other symbol
+                ClassSymbol sealedOne = ts.isSealed() ? ts : ss;
+                ClassSymbol other = sealedOne == ts ? ss : ts;
+                return sealedOne.permitted.stream().allMatch(sym -> areDisjoint((ClassSymbol)sym, other));
+            }
+            return false;
+        }
+
         private TypeRelation isCastable = new TypeRelation() {
 
             public Boolean visitType(Type t, Type s) {
@@ -2115,6 +2154,8 @@ public class Types {
     // where
         private SimpleVisitor<Type,Symbol> asSuper = new SimpleVisitor<Type,Symbol>() {
 
+            private Set<Symbol> seenTypes = new HashSet<>();
+
             public Type visitType(Type t, Symbol sym) {
                 return null;
             }
@@ -2124,22 +2165,30 @@ public class Types {
                 if (t.tsym == sym)
                     return t;
 
-                Type st = supertype(t);
-                if (st.hasTag(CLASS) || st.hasTag(TYPEVAR)) {
-                    Type x = asSuper(st, sym);
-                    if (x != null)
-                        return x;
+                Symbol c = t.tsym;
+                if (!seenTypes.add(c)) {
+                    return null;
                 }
-                if ((sym.flags() & INTERFACE) != 0) {
-                    for (List<Type> l = interfaces(t); l.nonEmpty(); l = l.tail) {
-                        if (!l.head.hasTag(ERROR)) {
-                            Type x = asSuper(l.head, sym);
-                            if (x != null)
-                                return x;
+                try {
+                    Type st = supertype(t);
+                    if (st.hasTag(CLASS) || st.hasTag(TYPEVAR)) {
+                        Type x = asSuper(st, sym);
+                        if (x != null)
+                            return x;
+                    }
+                    if ((sym.flags() & INTERFACE) != 0) {
+                        for (List<Type> l = interfaces(t); l.nonEmpty(); l = l.tail) {
+                            if (!l.head.hasTag(ERROR)) {
+                                Type x = asSuper(l.head, sym);
+                                if (x != null)
+                                    return x;
+                            }
                         }
                     }
+                    return null;
+                } finally {
+                    seenTypes.remove(c);
                 }
-                return null;
             }
 
             @Override

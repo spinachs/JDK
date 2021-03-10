@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2002, 2019, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2002, 2021, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -26,7 +26,10 @@
 #define SHARE_GC_SHARED_WORKGROUP_HPP
 
 #include "memory/allocation.hpp"
+#include "metaprogramming/enableIf.hpp"
+#include "metaprogramming/logical.hpp"
 #include "runtime/globals.hpp"
+#include "runtime/nonJavaThread.hpp"
 #include "runtime/thread.hpp"
 #include "gc/shared/gcId.hpp"
 #include "logging/log.hpp"
@@ -52,6 +55,7 @@ class AbstractGangWorker;
 class Semaphore;
 class ThreadClosure;
 class WorkGang;
+class GangTaskDispatcher;
 
 // An abstract task to be worked on by a gang.
 // You subclass this to supply your own work() method
@@ -78,28 +82,6 @@ struct WorkData {
   AbstractGangTask* _task;
   uint              _worker_id;
   WorkData(AbstractGangTask* task, uint worker_id) : _task(task), _worker_id(worker_id) {}
-};
-
-// Interface to handle the synchronization between the coordinator thread and the worker threads,
-// when a task is dispatched out to the worker threads.
-class GangTaskDispatcher : public CHeapObj<mtGC> {
- public:
-  virtual ~GangTaskDispatcher() {}
-
-  // Coordinator API.
-
-  // Distributes the task out to num_workers workers.
-  // Returns when the task has been completed by all workers.
-  virtual void coordinator_execute_on_workers(AbstractGangTask* task, uint num_workers) = 0;
-
-  // Worker API.
-
-  // Waits for a task to become available to the worker.
-  // Returns when the worker has been assigned a task.
-  virtual WorkData worker_wait_for_task() = 0;
-
-  // Signal to the coordinator that the worker is done with the assigned task.
-  virtual void     worker_done_with_task() = 0;
 };
 
 // The work gang is the collection of workers to execute tasks.
@@ -130,16 +112,7 @@ class AbstractWorkGang : public CHeapObj<mtInternal> {
   }
 
  public:
-  AbstractWorkGang(const char* name, uint workers, bool are_GC_task_threads, bool are_ConcurrentGC_threads) :
-      _workers(NULL),
-      _total_workers(workers),
-      _active_workers(UseDynamicNumberOfGCThreads ? 1U : workers),
-      _created_workers(0),
-      _name(name),
-      _are_GC_task_threads(are_GC_task_threads),
-      _are_ConcurrentGC_threads(are_ConcurrentGC_threads)
-  { }
-
+  AbstractWorkGang(const char* name, uint workers, bool are_GC_task_threads, bool are_ConcurrentGC_threads);
   // Initialize workers in the gang.  Return true if initialization succeeded.
   void initialize_workers();
 
@@ -188,12 +161,6 @@ class AbstractWorkGang : public CHeapObj<mtInternal> {
   // Debugging.
   const char* name() const { return _name; }
 
-  // Printing
-  void print_worker_threads_on(outputStream *st) const;
-  void print_worker_threads() const {
-    print_worker_threads_on(tty);
-  }
-
  protected:
   virtual AbstractGangWorker* allocate_worker(uint which) = 0;
 };
@@ -221,11 +188,33 @@ public:
   // Run a task with the given number of workers, returns
   // when the task is done. The number of workers must be at most the number of
   // active workers.  Additional workers may be created if an insufficient
-  // number currently exists.
-  void run_task(AbstractGangTask* task, uint num_workers);
+  // number currently exists. If the add_foreground_work flag is true, the current thread
+  // is used to run the task too.
+  void run_task(AbstractGangTask* task, uint num_workers, bool add_foreground_work = false);
 
 protected:
   virtual AbstractGangWorker* allocate_worker(uint which);
+};
+
+// Temporarily try to set the number of active workers.
+// It's not guaranteed that it succeeds, and users need to
+// query the number of active workers.
+class WithUpdatedActiveWorkers : public StackObj {
+private:
+  AbstractWorkGang* const _gang;
+  const uint              _old_active_workers;
+
+public:
+  WithUpdatedActiveWorkers(AbstractWorkGang* gang, uint requested_num_workers) :
+      _gang(gang),
+      _old_active_workers(gang->active_workers()) {
+    uint capped_num_workers = MIN2(requested_num_workers, gang->total_workers());
+    gang->update_active_workers(capped_num_workers);
+  }
+
+  ~WithUpdatedActiveWorkers() {
+    _gang->update_active_workers(_old_active_workers);
+  }
 };
 
 // Several instances of this class run in parallel as workers for a gang.
@@ -314,37 +303,40 @@ public:
 // enumeration type.
 
 class SubTasksDone: public CHeapObj<mtInternal> {
-  volatile uint* _tasks;
+  volatile bool* _tasks;
   uint _n_tasks;
-  volatile uint _threads_completed;
-#ifdef ASSERT
-  volatile uint _claimed;
-#endif
 
-  // Set all tasks to unclaimed.
-  void clear();
+  // make sure verification logic is run exactly once to avoid duplicate assertion failures
+  DEBUG_ONLY(volatile bool _verification_done = false;)
+  void all_tasks_claimed_impl(uint skipped[], size_t skipped_size) NOT_DEBUG_RETURN;
+
+  NONCOPYABLE(SubTasksDone);
 
 public:
   // Initializes "this" to a state in which there are "n" tasks to be
-  // processed, none of the which are originally claimed.  The number of
-  // threads doing the tasks is initialized 1.
+  // processed, none of the which are originally claimed.
   SubTasksDone(uint n);
-
-  // True iff the object is in a valid state.
-  bool valid();
 
   // Attempt to claim the task "t", returning true if successful,
   // false if it has already been claimed.  The task "t" is required
   // to be within the range of "this".
   bool try_claim_task(uint t);
 
-  // The calling thread asserts that it has attempted to claim all the
-  // tasks that it will try to claim.  Every thread in the parallel task
-  // must execute this.  (When the last thread does so, the task array is
-  // cleared.)
-  //
-  // n_threads - Number of threads executing the sub-tasks.
-  void all_tasks_completed(uint n_threads);
+  // The calling thread asserts that it has attempted to claim all the tasks
+  // that it will try to claim.  Tasks that are meant to be skipped must be
+  // explicitly passed as extra arguments. Every thread in the parallel task
+  // must execute this.
+  template<typename T0, typename... Ts,
+          ENABLE_IF(Conjunction<std::is_same<T0, Ts>...>::value)>
+  void all_tasks_claimed(T0 first_skipped, Ts... more_skipped) {
+    static_assert(std::is_convertible<T0, uint>::value, "not convertible");
+    uint skipped[] = { static_cast<uint>(first_skipped), static_cast<uint>(more_skipped)... };
+    all_tasks_claimed_impl(skipped, ARRAY_SIZE(skipped));
+  }
+  // if there are no skipped tasks.
+  void all_tasks_claimed() {
+    all_tasks_claimed_impl(nullptr, 0);
+  }
 
   // Destructor.
   ~SubTasksDone();

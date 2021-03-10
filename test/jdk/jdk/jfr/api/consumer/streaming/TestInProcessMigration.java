@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2019, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2019, 2020, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -28,7 +28,6 @@ package jdk.jfr.api.consumer.streaming;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
-import java.time.Duration;
 import java.time.Instant;
 import java.util.concurrent.CountDownLatch;
 
@@ -71,7 +70,6 @@ public class TestInProcessMigration {
             System.out.println("Started es.startAsync()");
 
             try (Recording r = new Recording()) {
-                r.setFlushInterval(Duration.ofSeconds(1));
                 r.start();
                 // Chunk in default repository
                 MigrationEvent e1 = new MigrationEvent();

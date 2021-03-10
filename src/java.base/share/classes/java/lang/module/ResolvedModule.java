@@ -37,7 +37,6 @@ import java.util.Set;
  * module's content.
  *
  * @since 9
- * @spec JPMS
  * @see Configuration#modules()
  */
 public final class ResolvedModule {
@@ -79,7 +78,7 @@ public final class ResolvedModule {
      * @return The module descriptor
      */
     ModuleDescriptor descriptor() {
-        return reference().descriptor();
+        return mref.descriptor();
     }
 
     /**
@@ -93,7 +92,7 @@ public final class ResolvedModule {
      * @return The module name
      */
     public String name() {
-        return reference().descriptor().name();
+        return mref.descriptor().name();
     }
 
     /**

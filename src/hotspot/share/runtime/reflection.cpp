@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 1997, 2019, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 1997, 2021, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -28,15 +28,16 @@
 #include "classfile/moduleEntry.hpp"
 #include "classfile/packageEntry.hpp"
 #include "classfile/stringTable.hpp"
-#include "classfile/systemDictionary.hpp"
 #include "classfile/verifier.hpp"
+#include "classfile/vmClasses.hpp"
 #include "classfile/vmSymbols.hpp"
 #include "interpreter/linkResolver.hpp"
 #include "logging/log.hpp"
 #include "memory/oopFactory.hpp"
 #include "memory/resourceArea.hpp"
 #include "memory/universe.hpp"
-#include "oops/instanceKlass.hpp"
+#include "oops/instanceKlass.inline.hpp"
+#include "oops/klass.inline.hpp"
 #include "oops/objArrayKlass.hpp"
 #include "oops/objArrayOop.inline.hpp"
 #include "oops/oop.inline.hpp"
@@ -51,8 +52,13 @@
 #include "runtime/signature.hpp"
 #include "runtime/thread.inline.hpp"
 #include "runtime/vframe.inline.hpp"
+#include "utilities/formatBuffer.hpp"
 
-static void trace_class_resolution(const Klass* to_class) {
+static void trace_class_resolution(oop mirror) {
+  if (mirror == NULL || java_lang_Class::is_primitive(mirror)) {
+    return;
+  }
+  Klass* to_class = java_lang_Class::as_Klass(mirror);
   ResourceMark rm;
   int line_number = -1;
   const char * source_file = NULL;
@@ -113,7 +119,7 @@ BasicType Reflection::unbox_for_primitive(oop box, jvalue* value, TRAPS) {
 
 BasicType Reflection::unbox_for_regular_object(oop box, jvalue* value) {
   // Note:  box is really the unboxed oop.  It might even be a Short, etc.!
-  value->l = (jobject) box;
+  value->l = cast_from_oop<jobject>(box);
   return T_OBJECT;
 }
 
@@ -224,7 +230,7 @@ BasicType Reflection::array_get(jvalue* value, arrayOop a, int index, TRAPS) {
     THROW_(vmSymbols::java_lang_ArrayIndexOutOfBoundsException(), T_ILLEGAL);
   }
   if (a->is_objArray()) {
-    value->l = (jobject) objArrayOop(a)->obj_at(index);
+    value->l = cast_from_oop<jobject>(objArrayOop(a)->obj_at(index));
     return T_OBJECT;
   } else {
     assert(a->is_typeArray(), "just checking");
@@ -466,8 +472,8 @@ Reflection::VerifyClassAccessResults Reflection::verify_class_access(
   }
   // Allow all accesses from jdk/internal/reflect/MagicAccessorImpl subclasses to
   // succeed trivially.
-  if (SystemDictionary::reflect_MagicAccessorImpl_klass_is_loaded() &&
-      current_class->is_subclass_of(SystemDictionary::reflect_MagicAccessorImpl_klass())) {
+  if (vmClasses::reflect_MagicAccessorImpl_klass_is_loaded() &&
+      current_class->is_subclass_of(vmClasses::reflect_MagicAccessorImpl_klass())) {
     return ACCESS_OK;
   }
 
@@ -692,7 +698,7 @@ bool Reflection::verify_member_access(const Klass* current_class,
 
   // Allow all accesses from jdk/internal/reflect/MagicAccessorImpl subclasses to
   // succeed trivially.
-  if (current_class->is_subclass_of(SystemDictionary::reflect_MagicAccessorImpl_klass())) {
+  if (current_class->is_subclass_of(vmClasses::reflect_MagicAccessorImpl_klass())) {
     return true;
   }
 
@@ -707,7 +713,7 @@ bool Reflection::is_same_class_package(const Klass* class1, const Klass* class2)
 // Checks that the 'outer' klass has declared 'inner' as being an inner klass. If not,
 // throw an incompatible class change exception
 // If inner_is_member, require the inner to be a member of the outer.
-// If !inner_is_member, require the inner to be unsafe anonymous (a non-member).
+// If !inner_is_member, require the inner to be hidden or unsafe anonymous (non-members).
 // Caller is responsible for figuring out in advance which case must be true.
 void Reflection::check_for_inner_class(const InstanceKlass* outer, const InstanceKlass* inner,
                                        bool inner_is_member, TRAPS) {
@@ -750,56 +756,30 @@ void Reflection::check_for_inner_class(const InstanceKlass* outer, const Instanc
   );
 }
 
-// Utility method converting a single SignatureStream element into java.lang.Class instance
-static oop get_mirror_from_signature(const methodHandle& method,
-                                     SignatureStream* ss,
-                                     TRAPS) {
-
-
-  if (is_reference_type(ss->type())) {
-    Symbol* name = ss->as_symbol();
-    oop loader = method->method_holder()->class_loader();
-    oop protection_domain = method->method_holder()->protection_domain();
-    const Klass* k = SystemDictionary::resolve_or_fail(name,
-                                                       Handle(THREAD, loader),
-                                                       Handle(THREAD, protection_domain),
-                                                       true,
-                                                       CHECK_NULL);
-    if (log_is_enabled(Debug, class, resolve)) {
-      trace_class_resolution(k);
-    }
-    return k->java_mirror();
-  }
-
-  assert(ss->type() != T_VOID || ss->at_return_type(),
-    "T_VOID should only appear as return type");
-
-  return java_lang_Class::primitive_mirror(ss->type());
-}
-
 static objArrayHandle get_parameter_types(const methodHandle& method,
                                           int parameter_count,
                                           oop* return_type,
                                           TRAPS) {
   // Allocate array holding parameter types (java.lang.Class instances)
-  objArrayOop m = oopFactory::new_objArray(SystemDictionary::Class_klass(), parameter_count, CHECK_(objArrayHandle()));
+  objArrayOop m = oopFactory::new_objArray(vmClasses::Class_klass(), parameter_count, CHECK_(objArrayHandle()));
   objArrayHandle mirrors(THREAD, m);
   int index = 0;
   // Collect parameter types
   ResourceMark rm(THREAD);
-  Symbol*  signature = method->signature();
-  SignatureStream ss(signature);
-  while (!ss.at_return_type()) {
-    oop mirror = get_mirror_from_signature(method, &ss, CHECK_(objArrayHandle()));
-    mirrors->obj_at_put(index++, mirror);
-    ss.next();
+  for (ResolvingSignatureStream ss(method()); !ss.is_done(); ss.next()) {
+    oop mirror = ss.as_java_mirror(SignatureStream::NCDFError, CHECK_(objArrayHandle()));
+    if (log_is_enabled(Debug, class, resolve)) {
+      trace_class_resolution(mirror);
+    }
+    if (!ss.at_return_type()) {
+      mirrors->obj_at_put(index++, mirror);
+    } else if (return_type != NULL) {
+      // Collect return type as well
+      assert(ss.at_return_type(), "return type should be present");
+      *return_type = mirror;
+    }
   }
   assert(index == parameter_count, "invalid parameter count");
-  if (return_type != NULL) {
-    // Collect return type as well
-    assert(ss.at_return_type(), "return type should be present");
-    *return_type = get_mirror_from_signature(method, &ss, CHECK_(objArrayHandle()));
-  }
   return mirrors;
 }
 
@@ -808,23 +788,11 @@ static objArrayHandle get_exception_types(const methodHandle& method, TRAPS) {
 }
 
 static Handle new_type(Symbol* signature, Klass* k, TRAPS) {
-  // Basic types
-  BasicType type = vmSymbols::signature_type(signature);
-  if (type != T_OBJECT) {
-    return Handle(THREAD, Universe::java_mirror(type));
-  }
-
-  Klass* result =
-    SystemDictionary::resolve_or_fail(signature,
-                                      Handle(THREAD, k->class_loader()),
-                                      Handle(THREAD, k->protection_domain()),
-                                      true, CHECK_(Handle()));
-
+  ResolvingSignatureStream ss(signature, k, false);
+  oop nt = ss.as_java_mirror(SignatureStream::NCDFError, CHECK_NH);
   if (log_is_enabled(Debug, class, resolve)) {
-    trace_class_resolution(result);
+    trace_class_resolution(nt);
   }
-
-  oop nt = result->java_mirror();
   return Handle(THREAD, nt);
 }
 
@@ -846,8 +814,7 @@ oop Reflection::new_method(const methodHandle& method, bool for_constant_pool_ac
   Handle return_type(THREAD, return_type_oop);
 
   objArrayHandle exception_types = get_exception_types(method, CHECK_NULL);
-
-  if (exception_types.is_null()) return NULL;
+  assert(!exception_types.is_null(), "cannot return null");
 
   Symbol*  method_name = method->name();
   oop name_oop = StringTable::intern(method_name, CHECK_NULL);
@@ -893,7 +860,7 @@ oop Reflection::new_constructor(const methodHandle& method, TRAPS) {
   if (parameter_types.is_null()) return NULL;
 
   objArrayHandle exception_types = get_exception_types(method, CHECK_NULL);
-  if (exception_types.is_null()) return NULL;
+  assert(!exception_types.is_null(), "cannot return null");
 
   const int modifiers = method->access_flags().as_int() & JVM_RECOGNIZED_METHOD_MODIFIERS;
 
@@ -931,6 +898,9 @@ oop Reflection::new_field(fieldDescriptor* fd, TRAPS) {
   java_lang_reflect_Field::set_slot(rh(), fd->index());
   java_lang_reflect_Field::set_name(rh(), name());
   java_lang_reflect_Field::set_type(rh(), type());
+  if (fd->is_trusted_final()) {
+    java_lang_reflect_Field::set_trusted_final(rh());
+  }
   // Note the ACC_ANNOTATION bit, which is a per-class access flag, is never set here.
   java_lang_reflect_Field::set_modifiers(rh(), fd->access_flags().as_int() & JVM_RECOGNIZED_FIELD_MODIFIERS);
   java_lang_reflect_Field::set_override(rh(), false);
@@ -1065,7 +1035,7 @@ static oop invoke(InstanceKlass* klass,
           // JVMTI has already reported the pending exception
           // JVMTI internal flag reset is needed in order to report InvocationTargetException
           if (THREAD->is_Java_thread()) {
-            JvmtiExport::clear_detected_exception((JavaThread*)THREAD);
+            JvmtiExport::clear_detected_exception(THREAD->as_Java_thread());
           }
           JavaCallArguments args(Handle(THREAD, resolution_exception));
           THROW_ARG_0(vmSymbols::java_lang_reflect_InvocationTargetException(),
@@ -1179,7 +1149,7 @@ static oop invoke(InstanceKlass* klass,
     // JVMTI has already reported the pending exception
     // JVMTI internal flag reset is needed in order to report InvocationTargetException
     if (THREAD->is_Java_thread()) {
-      JvmtiExport::clear_detected_exception((JavaThread*)THREAD);
+      JvmtiExport::clear_detected_exception(THREAD->as_Java_thread());
     }
 
     JavaCallArguments args(Handle(THREAD, target_exception));

@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2002, 2019, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2002, 2021, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -24,8 +24,6 @@
 
 #include <objc/objc-runtime.h>
 #import <Foundation/Foundation.h>
-#import <JavaNativeFoundation/JavaNativeFoundation.h>
-#import <JavaRuntimeSupport/JavaRuntimeSupport.h>
 
 #include <jni.h>
 
@@ -243,7 +241,12 @@ jlong lookupByNameIncore(
     CHECK_EXCEPTION_(0);
   }
   symbolName_cstr = (*env)->GetStringUTFChars(env, symbolName, &isCopy);
-  CHECK_EXCEPTION_(0);
+  if ((*env)->ExceptionOccurred(env)) {
+    if (objectName_cstr != NULL) {
+      (*env)->ReleaseStringUTFChars(env, objectName, objectName_cstr);
+    }
+    return 0;
+  }
 
   print_debug("look for %s \n", symbolName_cstr);
   addr = (jlong) lookup_symbol(ph, objectName_cstr, symbolName_cstr);
@@ -253,6 +256,39 @@ jlong lookupByNameIncore(
   }
   (*env)->ReleaseStringUTFChars(env, symbolName, symbolName_cstr);
   return addr;
+}
+
+/* Create a pool and initiate a try block to catch any exception */
+#define JNI_COCOA_ENTER(env) \
+ NSAutoreleasePool *pool = [[NSAutoreleasePool alloc] init]; \
+ @try {
+
+/* Don't allow NSExceptions to escape to Java.
+ * If there is a Java exception that has been thrown that should escape.
+ * And ensure we drain the auto-release pool.
+ */
+#define JNI_COCOA_EXIT(env) \
+ } \
+ @catch (NSException *e) { \
+     NSLog(@"%@", [e callStackSymbols]); \
+ } \
+ @finally { \
+    [pool drain]; \
+ };
+
+static NSString* JavaStringToNSString(JNIEnv *env, jstring jstr) {
+
+    if (jstr == NULL) {
+        return NULL;
+    }
+    jsize len = (*env)->GetStringLength(env, jstr);
+    const jchar *chars = (*env)->GetStringChars(env, jstr, NULL);
+    if (chars == NULL) {
+        return NULL;
+    }
+    NSString *result = [NSString stringWithCharacters:(UniChar *)chars length:len];
+    (*env)->ReleaseStringChars(env, jstr, chars);
+    return result;
 }
 
 /*
@@ -272,8 +308,9 @@ Java_sun_jvm_hotspot_debugger_bsd_BsdDebuggerLocal_lookupByName0(
 
   jlong address = 0;
 
-JNF_COCOA_ENTER(env);
-  NSString *symbolNameString = JNFJavaToNSString(env, symbolName);
+  JNI_COCOA_ENTER(env);
+
+  NSString *symbolNameString = JavaStringToNSString(env, symbolName);
 
   print_debug("lookupInProcess called for %s\n", [symbolNameString UTF8String]);
 
@@ -284,7 +321,7 @@ JNF_COCOA_ENTER(env);
   }
 
   print_debug("address of symbol %s = %llx\n", [symbolNameString UTF8String], address);
-JNF_COCOA_EXIT(env);
+  JNI_COCOA_EXIT(env);
 
   return address;
 }
@@ -388,7 +425,7 @@ Java_sun_jvm_hotspot_debugger_bsd_BsdDebuggerLocal_readBytesFromProcess0(
   // Try to read each of the pages.
   for (i = 0; i < pageCount; i++) {
     result = vm_read(gTask, alignedAddress + i*vm_page_size, vm_page_size,
-		     &pages[i], &byteCount);
+                     &pages[i], &byteCount);
     mapped[i] = (result == KERN_SUCCESS);
     // assume all failures are unmapped pages
   }
@@ -595,7 +632,7 @@ Java_sun_jvm_hotspot_debugger_bsd_BsdDebuggerLocal_getThreadIntegerRegisterSet0(
   JNIEnv *env, jobject this_obj,
   jlong thread_id)
 {
-  print_debug("getThreadRegisterSet0 called\n");
+  print_debug("getThreadIntegerRegisterSet0 called\n");
 
   struct ps_prochandle* ph = get_proc_handle(env, this_obj);
   if (ph != NULL && ph->core != NULL) {
@@ -615,7 +652,13 @@ Java_sun_jvm_hotspot_debugger_bsd_BsdDebuggerLocal_getThreadIntegerRegisterSet0(
   result = thread_get_state(tid, HSDB_THREAD_STATE, (thread_state_t)&state, &count);
 
   if (result != KERN_SUCCESS) {
-    print_error("getregs: thread_get_state(%d) failed (%d)\n", tid, result);
+    // This is not considered fatal. Unlike on Linux and Windows, we haven't seen a
+    // failure to get thread registers, but if it were to fail the response should
+    // be the same. By ignoring this error and returning NULL, stacking walking code
+    // will get null registers and fallback to using the "last java frame" if setup.
+    fprintf(stdout, "WARNING: getThreadIntegerRegisterSet0: thread_get_state failed (%d) for thread (%d)\n",
+            result, tid);
+    fflush(stdout);
     return NULL;
   }
 
@@ -676,25 +719,25 @@ Java_sun_jvm_hotspot_debugger_bsd_BsdDebuggerLocal_getThreadIntegerRegisterSet0(
  */
 JNIEXPORT jint JNICALL
 Java_sun_jvm_hotspot_debugger_macosx_MacOSXDebuggerLocal_translateTID0(
-  JNIEnv *env, jobject this_obj, jint tid) 
+  JNIEnv *env, jobject this_obj, jint tid)
 {
   print_debug("translateTID0 called on tid = 0x%x\n", (int)tid);
 
   kern_return_t result;
   thread_t foreign_tid, usable_tid;
   mach_msg_type_name_t type;
-  
+
   foreign_tid = tid;
-    
+
   task_t gTask = getTask(env, this_obj);
-  result = mach_port_extract_right(gTask, foreign_tid, 
-				   MACH_MSG_TYPE_COPY_SEND, 
-				   &usable_tid, &type);
+  result = mach_port_extract_right(gTask, foreign_tid,
+                                   MACH_MSG_TYPE_COPY_SEND,
+                                   &usable_tid, &type);
   if (result != KERN_SUCCESS)
     return -1;
-    
+
   print_debug("translateTID0: 0x%x -> 0x%x\n", foreign_tid, usable_tid);
-    
+
   return (jint) usable_tid;
 }
 
@@ -801,7 +844,7 @@ Java_sun_jvm_hotspot_debugger_bsd_BsdDebuggerLocal_attach0__I(
 {
   print_debug("attach0 called for jpid=%d\n", (int)jpid);
 
-JNF_COCOA_ENTER(env);
+  JNI_COCOA_ENTER(env);
 
   kern_return_t result;
   task_t gTask = 0;
@@ -915,34 +958,37 @@ JNF_COCOA_ENTER(env);
     THROW_NEW_DEBUGGER_EXCEPTION("Can't attach symbolicator to the process");
   }
 
-JNF_COCOA_EXIT(env);
+  JNI_COCOA_EXIT(env);
 }
 
 /** For core file,
     called from Java_sun_jvm_hotspot_debugger_bsd_BsdDebuggerLocal_attach0__Ljava_lang_String_2Ljava_lang_String_2 */
 static void fillLoadObjects(JNIEnv* env, jobject this_obj, struct ps_prochandle* ph) {
   int n = 0, i = 0;
+  jobject loadObjectList;
+
+  loadObjectList = (*env)->GetObjectField(env, this_obj, loadObjectList_ID);
+  CHECK_EXCEPTION;
 
   // add load objects
   n = get_num_libs(ph);
   for (i = 0; i < n; i++) {
-     uintptr_t base;
+     uintptr_t base, memsz;
      const char* name;
      jobject loadObject;
-     jobject loadObjectList;
      jstring nameString;
 
-     base = get_lib_base(ph, i);
+     get_lib_addr_range(ph, i, &base, &memsz);
      name = get_lib_name(ph, i);
      nameString = (*env)->NewStringUTF(env, name);
      CHECK_EXCEPTION;
      loadObject = (*env)->CallObjectMethod(env, this_obj, createLoadObject_ID,
-                                            nameString, (jlong)0, (jlong)base);
-     CHECK_EXCEPTION;
-     loadObjectList = (*env)->GetObjectField(env, this_obj, loadObjectList_ID);
+                                            nameString, (jlong)memsz, (jlong)base);
      CHECK_EXCEPTION;
      (*env)->CallBooleanMethod(env, loadObjectList, listAdd_ID, loadObject);
      CHECK_EXCEPTION;
+     (*env)->DeleteLocalRef(env, nameString);
+     (*env)->DeleteLocalRef(env, loadObject);
   }
 }
 
@@ -963,7 +1009,10 @@ Java_sun_jvm_hotspot_debugger_bsd_BsdDebuggerLocal_attach0__Ljava_lang_String_2L
   execName_cstr = (*env)->GetStringUTFChars(env, execName, &isCopy);
   CHECK_EXCEPTION;
   coreName_cstr = (*env)->GetStringUTFChars(env, coreName, &isCopy);
-  CHECK_EXCEPTION;
+  if ((*env)->ExceptionOccurred(env)) {
+    (*env)->ReleaseStringUTFChars(env, execName, execName_cstr);
+    return;
+  }
 
   print_debug("attach: %s %s\n", execName_cstr, coreName_cstr);
 
@@ -1006,7 +1055,8 @@ Java_sun_jvm_hotspot_debugger_bsd_BsdDebuggerLocal_detach0(
      Prelease(ph);
      return;
   }
-JNF_COCOA_ENTER(env);
+
+  JNI_COCOA_ENTER(env);
 
   task_t gTask = getTask(env, this_obj);
   kern_return_t k_res = 0;
@@ -1057,5 +1107,5 @@ JNF_COCOA_ENTER(env);
 
   detach_cleanup(gTask, env, this_obj, false);
 
-JNF_COCOA_EXIT(env);
+  JNI_COCOA_EXIT(env);
 }

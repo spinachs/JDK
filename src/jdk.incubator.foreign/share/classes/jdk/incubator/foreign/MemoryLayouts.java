@@ -1,5 +1,5 @@
 /*
- *  Copyright (c) 2019, Oracle and/or its affiliates. All rights reserved.
+ *  Copyright (c) 2019, 2020, Oracle and/or its affiliates. All rights reserved.
  *  DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  *  This code is free software; you can redistribute it and/or modify it
@@ -26,13 +26,15 @@
 
 package jdk.incubator.foreign;
 
+import jdk.internal.misc.Unsafe;
+
 import java.nio.ByteOrder;
 
 /**
  * This class defines useful layout constants. Some of the constants defined in this class are explicit in both
  * size and byte order (see {@link #BITS_64_BE}), and can therefore be used to explicitly and unambiguously specify the
  * contents of a memory segment. Other constants make implicit byte order assumptions (see
- * {@link #JAVA_INT}); as such, these constants make it easy to interoperate with other serialization-centric APIs,
+ * {@link #JAVA_INT}); as such, these constants make it easy to work with other serialization-centric APIs,
  * such as {@link java.nio.ByteBuffer}.
  */
 public final class MemoryLayouts {
@@ -102,6 +104,11 @@ public final class MemoryLayouts {
     public static final MemoryLayout PAD_64 = MemoryLayout.ofPaddingBits(64);
 
     /**
+     * A value layout constant whose size is the same as that of a machine address (e.g. {@code size_t}), and byte order set to {@link ByteOrder#nativeOrder()}.
+     */
+    public static final ValueLayout ADDRESS = MemoryLayout.ofValueBits(Unsafe.ADDRESS_SIZE * 8, ByteOrder.nativeOrder());
+
+    /**
      * A value layout constant whose size is the same as that of a Java {@code byte}, and byte order set to {@link ByteOrder#nativeOrder()}.
      */
     public static final ValueLayout JAVA_BYTE = MemoryLayout.ofValueBits(8, ByteOrder.nativeOrder());
@@ -123,8 +130,14 @@ public final class MemoryLayouts {
 
     /**
      * A value layout constant whose size is the same as that of a Java {@code long}, and byte order set to {@link ByteOrder#nativeOrder()}.
+     * The alignment of this layout (see {@link MemoryLayout#byteAlignment()} is platform-dependent, so that the following
+     * invariant holds:
+     * <blockquote><pre>{@code
+    MemoryLayouts.JAVA_LONG.byteAlignment() == MemoryLayouts.ADDRESS.byteSize();
+     * }</pre></blockquote>
      */
-    public static final ValueLayout JAVA_LONG = MemoryLayout.ofValueBits(64, ByteOrder.nativeOrder());
+    public static final ValueLayout JAVA_LONG = MemoryLayout.ofValueBits(64, ByteOrder.nativeOrder())
+            .withBitAlignment(ADDRESS.bitSize());
 
     /**
      * A value layout constant whose size is the same as that of a Java {@code float}, and byte order set to {@link ByteOrder#nativeOrder()}.
@@ -133,6 +146,12 @@ public final class MemoryLayouts {
 
     /**
      * A value layout constant whose size is the same as that of a Java {@code double}, and byte order set to {@link ByteOrder#nativeOrder()}.
+     * The alignment of this layout (see {@link MemoryLayout#byteAlignment()} is platform-dependent, so that the following
+     * invariant holds:
+     * <blockquote><pre>{@code
+    MemoryLayouts.JAVA_DOUBLE.byteAlignment() == MemoryLayouts.ADDRESS.byteSize();
+     * }</pre></blockquote>
      */
-    public static final ValueLayout JAVA_DOUBLE = MemoryLayout.ofValueBits(64, ByteOrder.nativeOrder());
+    public static final ValueLayout JAVA_DOUBLE = MemoryLayout.ofValueBits(64, ByteOrder.nativeOrder())
+            .withBitAlignment(ADDRESS.bitSize());
 }

@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 1994, 2019, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 1994, 2021, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -142,7 +142,6 @@ import sun.security.action.GetPropertyAction;
  * additional file operations, file attributes, and I/O exceptions to help
  * diagnose errors when an operation on a file fails.
  *
- * @author  unascribed
  * @since   1.0
  */
 
@@ -820,7 +819,7 @@ public class File
         if (isInvalid()) {
             return false;
         }
-        return ((fs.getBooleanAttributes(this) & FileSystem.BA_EXISTS) != 0);
+        return fs.hasBooleanAttributes(this, FileSystem.BA_EXISTS);
     }
 
     /**
@@ -850,8 +849,7 @@ public class File
         if (isInvalid()) {
             return false;
         }
-        return ((fs.getBooleanAttributes(this) & FileSystem.BA_DIRECTORY)
-                != 0);
+        return fs.hasBooleanAttributes(this, FileSystem.BA_DIRECTORY);
     }
 
     /**
@@ -883,7 +881,7 @@ public class File
         if (isInvalid()) {
             return false;
         }
-        return ((fs.getBooleanAttributes(this) & FileSystem.BA_REGULAR) != 0);
+        return fs.hasBooleanAttributes(this, FileSystem.BA_REGULAR);
     }
 
     /**
@@ -912,7 +910,7 @@ public class File
         if (isInvalid()) {
             return false;
         }
-        return ((fs.getBooleanAttributes(this) & FileSystem.BA_HIDDEN) != 0);
+        return fs.hasBooleanAttributes(this, FileSystem.BA_HIDDEN);
     }
 
     /**
@@ -1378,7 +1376,9 @@ public class File
      * file from one filesystem to another, it might not be atomic, and it
      * might not succeed if a file with the destination abstract pathname
      * already exists.  The return value should always be checked to make sure
-     * that the rename operation was successful.
+     * that the rename operation was successful.  As instances of {@code File}
+     * are immutable, this File object is not changed to name the destination
+     * file or directory.
      *
      * <p> Note that the {@link java.nio.file.Files} class defines the {@link
      * java.nio.file.Files#move move} method to move or rename a file in a
@@ -2103,7 +2103,7 @@ public class File
                     throw se;
                 }
             }
-        } while ((fs.getBooleanAttributes(f) & FileSystem.BA_EXISTS) != 0);
+        } while (fs.hasBooleanAttributes(f, FileSystem.BA_EXISTS));
 
         if (!fs.createFileExclusively(f.getPath()))
             throw new IOException("Unable to create temporary file");
@@ -2192,8 +2192,8 @@ public class File
      *          {@code false} otherwise
      */
     public boolean equals(Object obj) {
-        if ((obj != null) && (obj instanceof File)) {
-            return compareTo((File)obj) == 0;
+        if (obj instanceof File file) {
+            return compareTo(file) == 0;
         }
         return false;
     }
@@ -2232,6 +2232,9 @@ public class File
      * in case the path is reconstituted on a different host type.
      *
      * @serialData  Default fields followed by separator character.
+     *
+     * @param  s the {@code ObjectOutputStream} to which data is written
+     * @throws IOException if an I/O error occurs
      */
     @java.io.Serial
     private synchronized void writeObject(java.io.ObjectOutputStream s)
@@ -2246,6 +2249,10 @@ public class File
      * The original separator character is read.  If it is different
      * than the separator character on this system, then the old separator
      * is replaced by the local separator.
+     *
+     * @param  s the {@code ObjectInputStream} from which data is read
+     * @throws IOException if an I/O error occurs
+     * @throws ClassNotFoundException if a serialized class cannot be loaded
      */
     @java.io.Serial
     private synchronized void readObject(java.io.ObjectInputStream s)

@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2012, 2019, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2012, 2020, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -119,12 +119,12 @@ import java.util.Objects;
  * For most applications written today, the ISO-8601 rules are entirely suitable.
  * However, any application that makes use of historical dates, and requires them
  * to be accurate will find the ISO-8601 approach unsuitable.
- *
  * <p>
  * This is a <a href="{@docRoot}/java.base/java/lang/doc-files/ValueBased.html">value-based</a>
- * class; use of identity-sensitive operations (including reference equality
- * ({@code ==}), identity hash code, or synchronization) on instances of
- * {@code Year} may have unpredictable results and should be avoided.
+ * class; programmers should treat instances that are
+ * {@linkplain #equals(Object) equal} as interchangeable and should not
+ * use instances for synchronization, or unpredictable behavior may
+ * occur. For example, in a future release, synchronization may fail.
  * The {@code equals} method should be used for comparisons.
  *
  * @implSpec
@@ -132,6 +132,7 @@ import java.util.Objects;
  *
  * @since 1.8
  */
+@jdk.internal.ValueBased
 public final class Year
         implements Temporal, TemporalAdjuster, Comparable<Year>, Serializable {
 
@@ -153,7 +154,8 @@ public final class Year
      * Parser.
      */
     private static final DateTimeFormatter PARSER = new DateTimeFormatterBuilder()
-        .appendValue(YEAR, 4, 10, SignStyle.EXCEEDS_PAD)
+        .parseLenient()
+        .appendValue(YEAR, 1, 10, SignStyle.NORMAL)
         .toFormatter();
 
     /**
@@ -268,7 +270,6 @@ public final class Year
      * Obtains an instance of {@code Year} from a text string such as {@code 2007}.
      * <p>
      * The string must represent a valid year.
-     * Years outside the range 0000 to 9999 must be prefixed by the plus or minus symbol.
      *
      * @param text  the text to parse such as "2007", not null
      * @return the parsed year, not null

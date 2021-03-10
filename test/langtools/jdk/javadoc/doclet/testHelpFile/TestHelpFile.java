@@ -23,7 +23,7 @@
 
 /*
  * @test
- * @bug      7132631
+ * @bug      7132631 8241693
  * @summary  Make sure that the help file is generated correctly.
  * @library  ../../lib
  * @modules jdk.javadoc/jdk.javadoc.internal.tool
@@ -34,6 +34,8 @@
 import javadoc.tester.JavadocTester;
 
 public class TestHelpFile extends JavadocTester {
+    /** A constant value to be documented. */
+    public static final int ZERO = 0;
 
     public static void main(String... args) throws Exception {
         TestHelpFile tester = new TestHelpFile();
@@ -48,6 +50,28 @@ public class TestHelpFile extends JavadocTester {
         checkExit(Exit.OK);
 
         checkOutput("help-doc.html", true,
-            "<a href=\"constant-values.html\">Constant Field Values</a>");
+            """
+                <a href="constant-values.html">Constant Field Values</a>""");
+
+        // check a representative sample of the contents
+        checkOrder("help-doc.html",
+                """
+                    </div>
+                    <section class="help-section">
+                    <h2>Package</h2>""",
+                """
+                    <ul class="help-section-list">
+                    <li>Interfaces</li>
+                    <li>Classes</li>
+                    <li>Enum Classes</li>""",
+                """
+                    </section>
+                    <section class="help-section">
+                    <h2>Class or Interface</h2>""",
+                """
+                    <ul class="help-section-list">
+                    <li>Class Inheritance Diagram</li>
+                    <li>Direct Subclasses</li>
+                    """);
     }
 }

@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 1998, 2019, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 1998, 2021, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -33,6 +33,7 @@
 #include "classfile/symbolTable.hpp"
 #include "classfile/systemDictionary.hpp"
 #include "classfile/verifier.hpp"
+#include "classfile/vmClasses.hpp"
 #include "classfile/vmSymbols.hpp"
 #include "interpreter/bytecodes.hpp"
 #include "interpreter/bytecodeStream.hpp"
@@ -42,9 +43,11 @@
 #include "memory/resourceArea.hpp"
 #include "memory/universe.hpp"
 #include "oops/constantPool.inline.hpp"
-#include "oops/instanceKlass.hpp"
+#include "oops/instanceKlass.inline.hpp"
+#include "oops/klass.inline.hpp"
 #include "oops/oop.inline.hpp"
 #include "oops/typeArrayOop.hpp"
+#include "runtime/arguments.hpp"
 #include "runtime/fieldDescriptor.hpp"
 #include "runtime/handles.inline.hpp"
 #include "runtime/interfaceSupport.inline.hpp"
@@ -134,8 +137,15 @@ void Verifier::trace_class_resolution(Klass* resolve_class, InstanceKlass* verif
 void Verifier::log_end_verification(outputStream* st, const char* klassName, Symbol* exception_name, TRAPS) {
   if (HAS_PENDING_EXCEPTION) {
     st->print("Verification for %s has", klassName);
-    st->print_cr(" exception pending %s ",
+    oop message = java_lang_Throwable::message(PENDING_EXCEPTION);
+    if (message != NULL) {
+      char* ex_msg = java_lang_String::as_utf8_string(message);
+      st->print_cr(" exception pending '%s %s'",
+                 PENDING_EXCEPTION->klass()->external_name(), ex_msg);
+    } else {
+      st->print_cr(" exception pending %s ",
                  PENDING_EXCEPTION->klass()->external_name());
+    }
   } else if (exception_name != NULL) {
     st->print_cr("Verification for %s failed", klassName);
   }
@@ -165,7 +175,7 @@ bool Verifier::verify(InstanceKlass* klass, bool should_verify_class, TRAPS) {
 
   // Timer includes any side effects of class verification (resolution,
   // etc), but not recursive calls to Verifier::verify().
-  JavaThread* jt = (JavaThread*)THREAD;
+  JavaThread* jt = THREAD->as_Java_thread();
   PerfClassTraceTime timer(ClassLoader::perf_class_verify_time(),
                            ClassLoader::perf_class_verify_selftime(),
                            ClassLoader::perf_classes_verified(),
@@ -257,7 +267,7 @@ bool Verifier::verify(InstanceKlass* klass, bool should_verify_class, TRAPS) {
 
 bool Verifier::is_eligible_for_verification(InstanceKlass* klass, bool should_verify_class) {
   Symbol* name = klass->name();
-  Klass* refl_magic_klass = SystemDictionary::reflect_MagicAccessorImpl_klass();
+  Klass* refl_magic_klass = vmClasses::reflect_MagicAccessorImpl_klass();
 
   bool is_reflect = refl_magic_klass != NULL && klass->is_subtype_of(refl_magic_klass);
 
@@ -288,8 +298,7 @@ bool Verifier::is_eligible_for_verification(InstanceKlass* klass, bool should_ve
 
 Symbol* Verifier::inference_verify(
     InstanceKlass* klass, char* message, size_t message_len, TRAPS) {
-  JavaThread* thread = (JavaThread*)THREAD;
-  JNIEnv *env = thread->jni_environment();
+  JavaThread* thread = THREAD->as_Java_thread();
 
   verify_byte_codes_fn_t verify_func = verify_byte_codes_fn();
 
@@ -298,10 +307,10 @@ Symbol* Verifier::inference_verify(
     return vmSymbols::java_lang_VerifyError();
   }
 
-  ResourceMark rm(THREAD);
+  ResourceMark rm(thread);
   log_info(verification)("Verifying class %s with old format", klass->external_name());
 
-  jclass cls = (jclass) JNIHandles::make_local(env, klass->java_mirror());
+  jclass cls = (jclass) JNIHandles::make_local(thread, klass->java_mirror());
   jint result;
 
   {
@@ -309,7 +318,7 @@ Symbol* Verifier::inference_verify(
     ThreadToNativeFromVM ttn(thread);
     // ThreadToNativeFromVM takes care of changing thread_state, so safepoint
     // code knows that we have left the VM
-
+    JNIEnv *env = thread->jni_environment();
     result = (*verify_func)(env, cls, message, (int)message_len, klass->major_version());
   }
 
@@ -2081,6 +2090,8 @@ Klass* ClassVerifier::load_class(Symbol* name, TRAPS) {
   oop loader = current_class()->class_loader();
   oop protection_domain = current_class()->protection_domain();
 
+  assert(name_in_supers(name, current_class()), "name should be a super class");
+
   Klass* kls = SystemDictionary::resolve_or_fail(
     name, Handle(THREAD, loader), Handle(THREAD, protection_domain),
     true, THREAD);
@@ -2108,7 +2119,7 @@ bool ClassVerifier::is_protected_access(InstanceKlass* this_class,
   InstanceKlass* target_instance = InstanceKlass::cast(target_class);
   fieldDescriptor fd;
   if (is_method) {
-    Method* m = target_instance->uncached_lookup_method(field_name, field_sig, Klass::find_overpass);
+    Method* m = target_instance->uncached_lookup_method(field_name, field_sig, Klass::OverpassLookupMode::find);
     if (m != NULL && m->is_protected()) {
       if (!this_class->is_same_class_package(m->method_holder())) {
         return true;
@@ -2701,7 +2712,7 @@ void ClassVerifier::verify_invoke_init(
       Method* m = InstanceKlass::cast(ref_klass)->uncached_lookup_method(
         vmSymbols::object_initializer_name(),
         cp->signature_ref_at(bcs->get_index_u2()),
-        Klass::find_overpass);
+        Klass::OverpassLookupMode::find);
       // Do nothing if method is not found.  Let resolution detect the error.
       if (m != NULL) {
         InstanceKlass* mh = m->method_holder();
@@ -3138,7 +3149,7 @@ void ClassVerifier::verify_return_value(
   if (return_type == VerificationType::bogus_type()) {
     verify_error(ErrorContext::bad_type(bci,
         current_frame->stack_top_ctx(), TypeOrigin::signature(return_type)),
-        "Method expects a return value");
+        "Method does not expect a return value");
     return;
   }
   bool match = return_type.is_assignable_from(type, this, false, CHECK_VERIFY(this));
@@ -3153,13 +3164,6 @@ void ClassVerifier::verify_return_value(
 // The verifier creates symbols which are substrings of Symbols.
 // These are stored in the verifier until the end of verification so that
 // they can be reference counted.
-Symbol* ClassVerifier::create_temporary_symbol(const Symbol *s, int begin,
-                                               int end) {
-  const char* name = (const char*)s->base() + begin;
-  int length = end - begin;
-  return create_temporary_symbol(name, length);
-}
-
 Symbol* ClassVerifier::create_temporary_symbol(const char *name, int length) {
   // Quick deduplication check
   if (_previous_symbol != NULL && _previous_symbol->equals(name, length)) {

@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 1997, 2019, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 1997, 2021, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -33,6 +33,9 @@
 #include "runtime/thread.hpp"
 #include "utilities/macros.hpp"
 
+class BufferBlob;
+class CodeBuffer;
+
 // The InterpreterRuntime is called by the interpreter for everything
 // that cannot/should not be dealt with in assembly and needs C support.
 
@@ -46,10 +49,6 @@ class InterpreterRuntime: AllStatic {
   static void      note_trap_inner(JavaThread* thread, int reason,
                                    const methodHandle& trap_method, int trap_bci, TRAPS);
   static void      note_trap(JavaThread *thread, int reason, TRAPS);
-#ifdef CC_INTERP
-  // Profile traps in C++ interpreter.
-  static void      note_trap(JavaThread* thread, int reason, Method *method, int trap_bci);
-#endif // CC_INTERP
 
   // Inner work method for Interpreter's frequency counter overflow.
   static nmethod* frequency_counter_overflow_inner(JavaThread* thread, address branch_bcp);
@@ -84,6 +83,8 @@ class InterpreterRuntime: AllStatic {
   static void    throw_delayed_StackOverflowError(JavaThread* thread);
   static void    throw_ArrayIndexOutOfBoundsException(JavaThread* thread, arrayOopDesc* a, jint index);
   static void    throw_ClassCastException(JavaThread* thread, oopDesc* obj);
+  static void    throw_NullPointerException(JavaThread* thread);
+
   static void    create_exception(JavaThread* thread, char* name, char* message);
   static void    create_klass_exception(JavaThread* thread, char* name, oopDesc* obj);
   static address exception_handler_for_exception(JavaThread* thread, oopDesc* exception);
@@ -91,17 +92,6 @@ class InterpreterRuntime: AllStatic {
   static void    member_name_arg_or_null(JavaThread* thread, address dmh, Method* m, address bcp);
 #endif
   static void    throw_pending_exception(JavaThread* thread);
-
-#ifdef CC_INTERP
-  // Profile traps in C++ interpreter.
-  static void    note_nullCheck_trap (JavaThread* thread, Method *method, int trap_bci);
-  static void    note_div0Check_trap (JavaThread* thread, Method *method, int trap_bci);
-  static void    note_rangeCheck_trap(JavaThread* thread, Method *method, int trap_bci);
-  static void    note_classCheck_trap(JavaThread* thread, Method *method, int trap_bci);
-  static void    note_arrayCheck_trap(JavaThread* thread, Method *method, int trap_bci);
-  // A dummy for macros that shall not profile traps.
-  static void    note_no_trap(JavaThread* thread, Method *method, int trap_bci) {}
-#endif // CC_INTERP
 
   static void resolve_from_cache(JavaThread* thread, Bytecodes::Code bytecode);
  private:
@@ -116,7 +106,7 @@ class InterpreterRuntime: AllStatic {
  public:
   // Synchronization
   static void    monitorenter(JavaThread* thread, BasicObjectLock* elem);
-  static void    monitorexit (JavaThread* thread, BasicObjectLock* elem);
+  static void    monitorexit (BasicObjectLock* elem);
 
   static void    throw_illegal_monitor_state_exception(JavaThread* thread);
   static void    new_illegal_monitor_state_exception(JavaThread* thread);
@@ -128,6 +118,7 @@ class InterpreterRuntime: AllStatic {
 
   // Safepoints
   static void    at_safepoint(JavaThread* thread);
+  static void    at_unwind(JavaThread* thread);
 
   // Debugger support
   static void post_field_access(JavaThread *thread, oopDesc* obj,
@@ -163,7 +154,6 @@ class InterpreterRuntime: AllStatic {
 
   // Interpreter profiling support
   static jint    bcp_to_di(Method* method, address cur_bcp);
-  static void    profile_method(JavaThread* thread);
   static void    update_mdp_for_ret(JavaThread* thread, int bci);
 #ifdef ASSERT
   static void    verify_mdp(Method* method, address bcp, address mdp);

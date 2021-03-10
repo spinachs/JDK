@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2003, 2019, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2003, 2021, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -164,6 +164,13 @@ final class SSLEngineImpl extends SSLEngine implements SSLTransport {
         ByteBuffer[] srcs, int srcsOffset, int srcsLength,
         ByteBuffer[] dsts, int dstsOffset, int dstsLength) throws IOException {
 
+        // See note on TransportContext.needHandshakeFinishedStatus.
+        if (conContext.needHandshakeFinishedStatus) {
+            conContext.needHandshakeFinishedStatus = false;
+            return new SSLEngineResult(
+                    Status.OK, HandshakeStatus.FINISHED, 0, 0);
+        }
+
         // May need to deliver cached records.
         if (isOutboundDone()) {
             return new SSLEngineResult(
@@ -293,7 +300,7 @@ final class SSLEngineImpl extends SSLEngine implements SSLTransport {
         ByteBuffer[] srcs, int srcsOffset, int srcsLength,
         ByteBuffer[] dsts, int dstsOffset, int dstsLength) throws IOException {
 
-        Ciphertext ciphertext = null;
+        Ciphertext ciphertext;
         try {
             ciphertext = conContext.outputRecord.encode(
                 srcs, srcsOffset, srcsLength, dsts, dstsOffset, dstsLength);
@@ -418,7 +425,7 @@ final class SSLEngineImpl extends SSLEngine implements SSLTransport {
                 SSLLogger.finest("trigger NST");
             }
             conContext.conSession.updateNST = false;
-            NewSessionTicket.kickstartProducer.produce(
+            NewSessionTicket.t13PosthandshakeProducer.produce(
                     new PostHandshakeContext(conContext));
             return conContext.getHandshakeStatus();
         }
@@ -563,7 +570,7 @@ final class SSLEngineImpl extends SSLEngine implements SSLTransport {
         }
 
         if (hsStatus == SSLEngineResult.HandshakeStatus.NEED_UNWRAP_AGAIN) {
-            Plaintext plainText = null;
+            Plaintext plainText;
             try {
                 plainText = decode(null, 0, 0,
                         dsts, dstsOffset, dstsLength);
@@ -600,7 +607,7 @@ final class SSLEngineImpl extends SSLEngine implements SSLTransport {
          * Check the packet to make sure enough is here.
          * This will also indirectly check for 0 len packets.
          */
-        int packetLen = 0;
+        int packetLen;
         try {
             packetLen = conContext.inputRecord.bytesInCompletePacket(
                     srcs, srcsOffset, srcsLength);
@@ -612,16 +619,16 @@ final class SSLEngineImpl extends SSLEngine implements SSLTransport {
                 }
 
                 // invalid, discard the entire data [section 4.1.2.7, RFC 6347]
-                int deltaNet = 0;
-                // int deltaNet = netData.remaining();
-                // netData.position(netData.limit());
+                for (int i = srcsOffset; i < srcsOffset + srcsLength; i++) {
+                    srcs[i].position(srcs[i].limit());
+                }
 
                 Status status = (isInboundDone() ? Status.CLOSED : Status.OK);
                 if (hsStatus == null) {
                     hsStatus = getHandshakeStatus();
                 }
 
-                return new SSLEngineResult(status, hsStatus, deltaNet, 0, -1L);
+                return new SSLEngineResult(status, hsStatus, srcsRemains, 0, -1L);
             } else {
                 throw ssle;
             }
@@ -679,7 +686,7 @@ final class SSLEngineImpl extends SSLEngine implements SSLTransport {
         /*
          * We're now ready to actually do the read.
          */
-        Plaintext plainText = null;
+        Plaintext plainText;
         try {
             plainText = decode(srcs, srcsOffset, srcsLength,
                             dsts, dstsOffset, dstsLength);
@@ -1080,6 +1087,15 @@ final class SSLEngineImpl extends SSLEngine implements SSLTransport {
     @Override
     public boolean useDelegatedTask() {
         return true;
+    }
+
+    @Override
+    public String toString() {
+        return "SSLEngine[" +
+                "hostname=" + getPeerHost() +
+                ", port=" + getPeerPort() +
+                ", " + conContext.conSession +  // SSLSessionImpl.toString()
+                "]";
     }
 
     /*

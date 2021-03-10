@@ -183,14 +183,14 @@ public class Arguments {
      * @param ownName the name of this tool; used to prefix messages
      * @param args the args to be processed
      */
-    public void init(String ownName, String... args) {
+    public void init(String ownName, Iterable<String> args) {
         this.ownName = ownName;
         errorMode = ErrorMode.LOG;
         files = new LinkedHashSet<>();
         deferredFileManagerOptions = new LinkedHashMap<>();
         fileObjects = null;
         classNames = new LinkedHashSet<>();
-        processArgs(List.from(args), Option.getJavaCompilerOptions(), cmdLineHelper, true, false);
+        processArgs(args, Option.getJavaCompilerOptions(), cmdLineHelper, true, false);
         if (errors) {
             log.printLines(PrefixKind.JAVAC, "msg.usage", ownName);
         }
@@ -547,7 +547,8 @@ public class Arguments {
         String profileString = options.get(Option.PROFILE);
         if (profileString != null) {
             Profile profile = Profile.lookup(profileString);
-            if (!profile.isValid(target)) {
+            if (target.compareTo(Target.JDK1_8) <= 0 && !profile.isValid(target)) {
+                // note: -profile not permitted for target >= 9, so error (below) not warning (here)
                 reportDiag(Warnings.ProfileTargetConflict(profile, target));
             }
 
@@ -850,11 +851,6 @@ public class Arguments {
         String checkPackages = options.get(Option.XDOCLINT_PACKAGE);
         if (checkPackages != null) {
             doclintOpts.add(DocLint.XCHECK_PACKAGE + checkPackages);
-        }
-
-        String format = options.get(Option.DOCLINT_FORMAT);
-        if (format != null) {
-            doclintOpts.add(DocLint.XHTML_VERSION_PREFIX + format);
         }
 
         return List.from(doclintOpts.toArray(new String[doclintOpts.size()]));

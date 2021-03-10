@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2006, 2018, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2006, 2020, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -54,14 +54,6 @@ abstract class CharacterData {
         return null;
     }
 
-    boolean isOtherLowercase(int ch) {
-        return false;
-    }
-
-    boolean isOtherUppercase(int ch) {
-        return false;
-    }
-
     boolean isOtherAlphabetic(int ch) {
         return false;
     }
@@ -87,6 +79,8 @@ abstract class CharacterData {
                 return CharacterData01.instance;
             case(2):
                 return CharacterData02.instance;
+            case(3):
+                return CharacterData03.instance;
             case(14):
                 return CharacterData0E.instance;
             case(15):   // Private Use

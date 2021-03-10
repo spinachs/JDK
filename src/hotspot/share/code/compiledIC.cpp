@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 1997, 2019, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 1997, 2021, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -23,7 +23,6 @@
  */
 
 #include "precompiled.hpp"
-#include "classfile/systemDictionary.hpp"
 #include "code/codeBehaviours.hpp"
 #include "code/codeCache.hpp"
 #include "code/compiledIC.hpp"
@@ -36,11 +35,13 @@
 #include "memory/oopFactory.hpp"
 #include "memory/resourceArea.hpp"
 #include "memory/universe.hpp"
+#include "oops/klass.inline.hpp"
 #include "oops/method.inline.hpp"
 #include "oops/oop.inline.hpp"
 #include "oops/symbol.hpp"
 #include "runtime/handles.inline.hpp"
 #include "runtime/icache.hpp"
+#include "runtime/safepoint.hpp"
 #include "runtime/sharedRuntime.hpp"
 #include "runtime/stubRoutines.hpp"
 #include "utilities/events.hpp"
@@ -756,7 +757,9 @@ void CompiledDirectStaticCall::verify_mt_safe(const methodHandle& callee, addres
          "a) MT-unsafe modification of inline cache");
 
   address destination = jump->jump_destination();
-  assert(destination == (address)-1 || destination == entry,
+  assert(destination == (address)-1 || destination == entry
+         || old_method == NULL || !old_method->method_holder()->is_loader_alive() // may have a race due to class unloading.
+         || old_method->is_old(),  // may be race patching deoptimized nmethod due to redefinition.
          "b) MT-unsafe modification of inline cache");
 }
 #endif // !PRODUCT

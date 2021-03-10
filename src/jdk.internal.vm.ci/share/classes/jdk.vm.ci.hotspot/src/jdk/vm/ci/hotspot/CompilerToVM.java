@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2011, 2019, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2011, 2020, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -557,10 +557,10 @@ final class CompilerToVM {
     native int getCountersSize();
 
     /**
-     * Change the size of the counters allocated for JVMCI. This requires a safepoint to
+     * Attempt to change the size of the counters allocated for JVMCI. This requires a safepoint to
      * safely reallocate the storage but it's advisable to increase the size in reasonable chunks.
      */
-    native void setCountersSize(int newSize);
+    native boolean setCountersSize(int newSize);
 
     /**
      * Determines if {@code metaspaceMethodData} is mature.
@@ -612,18 +612,14 @@ final class CompilerToVM {
     native boolean shouldDebugNonSafepoints();
 
     /**
-     * Writes {@code length} bytes from {@code bytes} starting at offset {@code offset} to HotSpot's
-     * log stream.
+     * Writes {@code length} bytes from {@code buffer} to HotSpot's log stream.
      *
+     * @param buffer if {@code length <= 8}, then the bytes are encoded in this value in native
+     *            endianness order otherwise this is the address of a native memory buffer holding
+     *            the bytes
      * @param flush specifies if the log stream should be flushed after writing
-     * @param canThrow specifies if an error in the {@code bytes}, {@code offset} or {@code length}
-     *            arguments should result in an exception or a negative return value
-     * @return 0 on success, -1 if {@code bytes == null && !canThrow}, -2 if {@code !canThrow} and
-     *         copying would cause access of data outside array bounds
-     * @throws NullPointerException if {@code bytes == null}
-     * @throws IndexOutOfBoundsException if copying would cause access of data outside array bounds
      */
-    native int writeDebugOutput(byte[] bytes, int offset, int length, boolean flush, boolean canThrow);
+    native void writeDebugOutput(long buffer, int length, boolean flush);
 
     /**
      * Flush HotSpot's log stream.
@@ -771,6 +767,11 @@ final class CompilerToVM {
      * Forces initialization of {@code type}.
      */
     native void ensureInitialized(HotSpotResolvedObjectTypeImpl type);
+
+    /**
+     * Forces linking of {@code type}.
+     */
+    native void ensureLinked(HotSpotResolvedObjectTypeImpl type);
 
     /**
      * Checks if {@code object} is a String and is an interned string value.
@@ -972,9 +973,10 @@ final class CompilerToVM {
     native long getCurrentJavaThread();
 
     /**
+     * @param name name of current thread if in a native image otherwise {@code null}
      * @see HotSpotJVMCIRuntime#attachCurrentThread
      */
-    native boolean attachCurrentThread(boolean asDaemon);
+    native boolean attachCurrentThread(byte[] name, boolean asDaemon);
 
     /**
      * @see HotSpotJVMCIRuntime#detachCurrentThread()
@@ -985,4 +987,27 @@ final class CompilerToVM {
      * @see HotSpotJVMCIRuntime#exitHotSpot(int)
      */
     native void callSystemExit(int status);
+
+    /**
+     * @see JFR.Ticks#now
+     */
+    native long ticksNow();
+
+    /**
+     * Adds phases in HotSpot JFR.
+     *
+     * @see JFR.CompilerPhaseEvent#write
+     */
+    native int registerCompilerPhase(String phaseName);
+
+    /**
+     * @see JFR.CompilerPhaseEvent#write
+     */
+    native void notifyCompilerPhaseEvent(long startTime, int phase, int compileId, int level);
+
+    /**
+     * @see JFR.CompilerInliningEvent#write
+     */
+    native void notifyCompilerInliningEvent(int compileId, HotSpotResolvedJavaMethodImpl caller, HotSpotResolvedJavaMethodImpl callee, boolean succeeded, String message, int bci);
+
 }

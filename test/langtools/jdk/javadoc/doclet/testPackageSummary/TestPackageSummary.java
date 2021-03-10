@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2017, 2018, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2017, 2020, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -24,7 +24,7 @@
 
 /*
  * @test
- * @bug 8189841
+ * @bug 8189841 8253117
  * @summary Error in alternate row coloring in package-summary files
  * @library  ../../lib/
  * @modules jdk.javadoc/jdk.javadoc.internal.tool
@@ -49,28 +49,18 @@ public class TestPackageSummary extends JavadocTester {
         checkExit(Exit.OK);
 
         checkOutput("pkg/package-summary.html", true,
-                "<tbody>\n"
-                + "<tr class=\"altColor\">\n"
-                + "<th class=\"colFirst\" scope=\"row\"><a href=\"C0.html\" title=\"class in pkg\">C0</a></th>\n"
-                + "<td class=\"colLast\">&nbsp;</td>\n"
-                + "</tr>\n"
-                + "<tr class=\"rowColor\">\n"
-                + "<th class=\"colFirst\" scope=\"row\"><a href=\"C1.html\" title=\"class in pkg\">C1</a></th>\n"
-                + "<td class=\"colLast\">&nbsp;</td>\n"
-                + "</tr>\n"
-                + "<tr class=\"altColor\">\n"
-                + "<th class=\"colFirst\" scope=\"row\"><a href=\"C2.html\" title=\"class in pkg\">C2</a></th>\n"
-                + "<td class=\"colLast\">&nbsp;</td>\n"
-                + "</tr>\n"
-                + "<tr class=\"rowColor\">\n"
-                + "<th class=\"colFirst\" scope=\"row\"><a href=\"C3.html\" title=\"class in pkg\">C3</a></th>\n"
-                + "<td class=\"colLast\">&nbsp;</td>\n"
-                + "</tr>\n"
-                + "<tr class=\"altColor\">\n"
-                + "<th class=\"colFirst\" scope=\"row\"><a href=\"C4.html\" title=\"class in pkg\">C4</a></th>\n"
-                + "<td class=\"colLast\">&nbsp;</td>\n"
-                + "</tr>\n"
-                + "</tbody>\n"
+                """
+                    <div class="col-first even-row-color"><a href="C0.html" title="class in pkg">C0</a></div>
+                    <div class="col-last even-row-color">&nbsp;</div>
+                    <div class="col-first odd-row-color"><a href="C1.html" title="class in pkg">C1</a></div>
+                    <div class="col-last odd-row-color">&nbsp;</div>
+                    <div class="col-first even-row-color"><a href="C2.html" title="class in pkg">C2</a></div>
+                    <div class="col-last even-row-color">&nbsp;</div>
+                    <div class="col-first odd-row-color"><a href="C3.html" title="class in pkg">C3</a></div>
+                    <div class="col-last odd-row-color">&nbsp;</div>
+                    <div class="col-first even-row-color"><a href="C4.html" title="class in pkg">C4</a></div>
+                    <div class="col-last even-row-color">&nbsp;</div>
+                    """
         );
     }
 }

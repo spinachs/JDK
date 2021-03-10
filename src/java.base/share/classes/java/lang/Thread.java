@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 1994, 2019, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 1994, 2020, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -39,11 +39,11 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.locks.LockSupport;
 
 import jdk.internal.misc.TerminatingThreadLocal;
-import sun.nio.ch.Interruptible;
 import jdk.internal.reflect.CallerSensitive;
 import jdk.internal.reflect.Reflection;
+import jdk.internal.vm.annotation.IntrinsicCandidate;
+import sun.nio.ch.Interruptible;
 import sun.security.util.SecurityConstants;
-import jdk.internal.HotSpotIntrinsicCandidate;
 
 /**
  * A <i>thread</i> is a thread of execution in a program. The Java
@@ -133,7 +133,6 @@ import jdk.internal.HotSpotIntrinsicCandidate;
  * or method in this class will cause a {@link NullPointerException} to be
  * thrown.
  *
- * @author  unascribed
  * @see     Runnable
  * @see     Runtime#exit(int)
  * @see     #run()
@@ -242,7 +241,7 @@ public class Thread implements Runnable {
      */
     public static final int MIN_PRIORITY = 1;
 
-   /**
+    /**
      * The default priority that is assigned to a thread.
      */
     public static final int NORM_PRIORITY = 5;
@@ -257,7 +256,7 @@ public class Thread implements Runnable {
      *
      * @return  the currently executing thread.
      */
-    @HotSpotIntrinsicCandidate
+    @IntrinsicCandidate
     public static native Thread currentThread();
 
     /**
@@ -373,7 +372,7 @@ public class Thread implements Runnable {
      *
      * @since 9
      */
-    @HotSpotIntrinsicCandidate
+    @IntrinsicCandidate
     public static void onSpinWait() {}
 
     /**
@@ -952,7 +951,7 @@ public class Thread implements Runnable {
      * Object#wait() wait()}, {@link Object#wait(long) wait(long)}, or {@link
      * Object#wait(long, int) wait(long, int)} methods of the {@link Object}
      * class, or of the {@link #join()}, {@link #join(long)}, {@link
-     * #join(long, int)}, {@link #sleep(long)}, or {@link #sleep(long, int)},
+     * #join(long, int)}, {@link #sleep(long)}, or {@link #sleep(long, int)}
      * methods of this class, then its interrupt status will be cleared and it
      * will receive an {@link InterruptedException}.
      *
@@ -981,7 +980,6 @@ public class Thread implements Runnable {
      *          if the current thread cannot modify this thread
      *
      * @revised 6.0, 14
-     * @spec JSR-51
      */
     public void interrupt() {
         if (this != Thread.currentThread()) {
@@ -2046,9 +2044,9 @@ public class Thread implements Runnable {
                 return true;
 
             if (obj instanceof WeakClassKey) {
-                Object referent = get();
+                Class<?> referent = get();
                 return (referent != null) &&
-                       (referent == ((WeakClassKey) obj).get());
+                        (((WeakClassKey) obj).refersTo(referent));
             } else {
                 return false;
             }

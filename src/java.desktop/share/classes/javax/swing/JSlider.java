@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 1997, 2015, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 1997, 2021, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -22,22 +22,36 @@
  * or visit www.oracle.com if you need additional information or have any
  * questions.
  */
+
 package javax.swing;
 
-import javax.swing.event.*;
-import javax.swing.plaf.*;
-import javax.accessibility.*;
-
-import java.io.Serializable;
-import java.io.ObjectOutputStream;
-import java.io.IOException;
-
-import java.awt.*;
-import java.util.*;
-import java.beans.JavaBean;
+import java.awt.Color;
+import java.awt.Component;
+import java.awt.Font;
+import java.awt.Image;
 import java.beans.BeanProperty;
+import java.beans.JavaBean;
 import java.beans.PropertyChangeEvent;
 import java.beans.PropertyChangeListener;
+import java.io.IOException;
+import java.io.ObjectOutputStream;
+import java.io.Serial;
+import java.io.Serializable;
+import java.util.Dictionary;
+import java.util.Enumeration;
+import java.util.Hashtable;
+
+import javax.accessibility.Accessible;
+import javax.accessibility.AccessibleContext;
+import javax.accessibility.AccessibleRole;
+import javax.accessibility.AccessibleState;
+import javax.accessibility.AccessibleStateSet;
+import javax.accessibility.AccessibleValue;
+import javax.swing.event.ChangeEvent;
+import javax.swing.event.ChangeListener;
+import javax.swing.event.EventListenerList;
+import javax.swing.plaf.SliderUI;
+import javax.swing.plaf.UIResource;
 
 /**
  * A component that lets the user graphically select a value by sliding
@@ -69,7 +83,7 @@ import java.beans.PropertyChangeListener;
  * future Swing releases. The current serialization support is
  * appropriate for short term storage or RMI between applications running
  * the same version of Swing.  As of 1.4, support for long term storage
- * of all JavaBeans&trade;
+ * of all JavaBeans
  * has been added to the <code>java.beans</code> package.
  * Please see {@link java.beans.XMLEncoder}.
  *
@@ -534,13 +548,6 @@ public class JSlider extends JComponent implements SwingConstants, Accessible {
             return;
         }
         m.setValue(n);
-
-        if (accessibleContext != null) {
-            accessibleContext.firePropertyChange(
-                                                AccessibleContext.ACCESSIBLE_VALUE_PROPERTY,
-                                                Integer.valueOf(oldValue),
-                                                Integer.valueOf(m.getValue()));
-        }
     }
 
 
@@ -1326,6 +1333,7 @@ public class JSlider extends JComponent implements SwingConstants, Accessible {
      * See readObject() and writeObject() in JComponent for more
      * information about serialization in Swing.
      */
+    @Serial
     private void writeObject(ObjectOutputStream s) throws IOException {
         s.defaultWriteObject();
         if (getUIClassID().equals(uiClassID)) {
@@ -1407,14 +1415,25 @@ public class JSlider extends JComponent implements SwingConstants, Accessible {
      * future Swing releases. The current serialization support is
      * appropriate for short term storage or RMI between applications running
      * the same version of Swing.  As of 1.4, support for long term storage
-     * of all JavaBeans&trade;
+     * of all JavaBeans
      * has been added to the <code>java.beans</code> package.
      * Please see {@link java.beans.XMLEncoder}.
      */
     @SuppressWarnings("serial") // Same-version serialization only
     protected class AccessibleJSlider extends AccessibleJComponent
-    implements AccessibleValue {
+    implements AccessibleValue, ChangeListener {
 
+
+        private int oldModelValue;
+
+        /**
+         * constructs an AccessibleJSlider
+         */
+        protected AccessibleJSlider() {
+            // model is guaranteed to be non-null
+            oldModelValue = getModel().getValue();
+            JSlider.this.addChangeListener(this);
+        }
         /**
          * Get the state set of this object.
          *
@@ -1434,6 +1453,24 @@ public class JSlider extends JComponent implements SwingConstants, Accessible {
                 states.add(AccessibleState.HORIZONTAL);
             }
             return states;
+        }
+
+        /**
+         * Invoked when the target of the listener has changed its state.
+         *
+         * @param e  a {@code ChangeEvent} object. Must not be {@code null}
+         * @throws NullPointerException if the parameter is {@code null}
+         */
+        public void stateChanged(ChangeEvent e) {
+            if (e == null) {
+                throw new NullPointerException();
+            }
+            int newModelValue = getModel().getValue();
+            firePropertyChange(
+                    AccessibleContext.ACCESSIBLE_VALUE_PROPERTY,
+                    Integer.valueOf(oldModelValue),
+                    Integer.valueOf(newModelValue));
+            oldModelValue = newModelValue;
         }
 
         /**

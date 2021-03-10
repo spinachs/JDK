@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 1996, 2019, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 1996, 2021, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -476,8 +476,7 @@ public class PrintStream extends FilterOutputStream
     public boolean checkError() {
         if (out != null)
             flush();
-        if (out instanceof java.io.PrintStream) {
-            PrintStream ps = (PrintStream) out;
+        if (out instanceof PrintStream ps) {
             return ps.checkError();
         }
         return trouble;
@@ -1080,7 +1079,7 @@ public class PrintStream extends FilterOutputStream
      *         extra arguments are ignored.  The number of arguments is
      *         variable and may be zero.  The maximum number of arguments is
      *         limited by the maximum dimension of a Java array as defined by
-     *         <cite>The Java&trade; Virtual Machine Specification</cite>.
+     *         <cite>The Java Virtual Machine Specification</cite>.
      *         The behaviour on a
      *         {@code null} argument depends on the <a
      *         href="../util/Formatter.html#syntax">conversion</a>.
@@ -1132,7 +1131,7 @@ public class PrintStream extends FilterOutputStream
      *         extra arguments are ignored.  The number of arguments is
      *         variable and may be zero.  The maximum number of arguments is
      *         limited by the maximum dimension of a Java array as defined by
-     *         <cite>The Java&trade; Virtual Machine Specification</cite>.
+     *         <cite>The Java Virtual Machine Specification</cite>.
      *         The behaviour on a
      *         {@code null} argument depends on the <a
      *         href="../util/Formatter.html#syntax">conversion</a>.
@@ -1177,7 +1176,7 @@ public class PrintStream extends FilterOutputStream
      *         extra arguments are ignored.  The number of arguments is
      *         variable and may be zero.  The maximum number of arguments is
      *         limited by the maximum dimension of a Java array as defined by
-     *         <cite>The Java&trade; Virtual Machine Specification</cite>.
+     *         <cite>The Java Virtual Machine Specification</cite>.
      *         The behaviour on a
      *         {@code null} argument depends on the <a
      *         href="../util/Formatter.html#syntax">conversion</a>.
@@ -1236,7 +1235,7 @@ public class PrintStream extends FilterOutputStream
      *         extra arguments are ignored.  The number of arguments is
      *         variable and may be zero.  The maximum number of arguments is
      *         limited by the maximum dimension of a Java array as defined by
-     *         <cite>The Java&trade; Virtual Machine Specification</cite>.
+     *         <cite>The Java Virtual Machine Specification</cite>.
      *         The behaviour on a
      *         {@code null} argument depends on the <a
      *         href="../util/Formatter.html#syntax">conversion</a>.

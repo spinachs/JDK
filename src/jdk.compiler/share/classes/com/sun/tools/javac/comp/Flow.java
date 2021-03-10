@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 1999, 2019, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 1999, 2021, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -30,7 +30,6 @@ package com.sun.tools.javac.comp;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.Set;
-import java.util.stream.Collectors;
 
 import com.sun.source.tree.LambdaExpressionTree.BodyKind;
 import com.sun.tools.javac.code.*;
@@ -44,6 +43,7 @@ import com.sun.tools.javac.util.JCDiagnostic.DiagnosticPosition;
 import com.sun.tools.javac.util.JCDiagnostic.Error;
 import com.sun.tools.javac.util.JCDiagnostic.Warning;
 
+import com.sun.tools.javac.code.Kinds.Kind;
 import com.sun.tools.javac.code.Symbol.*;
 import com.sun.tools.javac.tree.JCTree.*;
 
@@ -525,6 +525,7 @@ public class Flow {
                     if (!l.head.hasTag(METHODDEF) &&
                         (TreeInfo.flags(l.head) & STATIC) != 0) {
                         scanDef(l.head);
+                        clearPendingExits(false);
                     }
                 }
 
@@ -533,6 +534,7 @@ public class Flow {
                     if (!l.head.hasTag(METHODDEF) &&
                         (TreeInfo.flags(l.head) & STATIC) == 0) {
                         scanDef(l.head);
+                        clearPendingExits(false);
                     }
                 }
 
@@ -565,16 +567,20 @@ public class Flow {
                 if (alive == Liveness.ALIVE && !tree.sym.type.getReturnType().hasTag(VOID))
                     log.error(TreeInfo.diagEndPos(tree.body), Errors.MissingRetStmt);
 
-                List<PendingExit> exits = pendingExits.toList();
-                pendingExits = new ListBuffer<>();
-                while (exits.nonEmpty()) {
-                    PendingExit exit = exits.head;
-                    exits = exits.tail;
-                    Assert.check(exit.tree.hasTag(RETURN) ||
-                                    log.hasErrorOn(exit.tree.pos()));
-                }
+                clearPendingExits(true);
             } finally {
                 lint = lintPrev;
+            }
+        }
+
+        private void clearPendingExits(boolean inMethod) {
+            List<PendingExit> exits = pendingExits.toList();
+            pendingExits = new ListBuffer<>();
+            while (exits.nonEmpty()) {
+                PendingExit exit = exits.head;
+                exits = exits.tail;
+                Assert.check((inMethod && exit.tree.hasTag(RETURN)) ||
+                                log.hasErrorOn(exit.tree.pos()));
             }
         }
 
@@ -691,9 +697,12 @@ public class Flow {
             pendingExits = new ListBuffer<>();
             scan(tree.selector);
             Set<Object> constants = null;
-            if ((tree.selector.type.tsym.flags() & ENUM) != 0) {
+            TypeSymbol selectorSym = tree.selector.type.tsym;
+            if ((selectorSym.flags() & ENUM) != 0) {
                 constants = new HashSet<>();
-                for (Symbol s : tree.selector.type.tsym.members().getSymbols(s -> (s.flags() & ENUM) != 0)) {
+                Filter<Symbol> enumConstantFilter =
+                        s -> (s.flags() & ENUM) != 0 && s.kind == Kind.VAR;
+                for (Symbol s : selectorSym.members().getSymbols(enumConstantFilter)) {
                     constants.add(s.name);
                 }
             }
@@ -727,7 +736,8 @@ public class Flow {
                 }
                 c.completesNormally = alive != Liveness.DEAD;
             }
-            if ((constants == null || !constants.isEmpty()) && !hasDefault) {
+            if ((constants == null || !constants.isEmpty()) && !hasDefault &&
+                !TreeInfo.isErrorEnumSwitch(tree.selector, tree.cases)) {
                 log.error(tree, Errors.NotExhaustive);
             }
             alive = prevAlive;
@@ -932,20 +942,23 @@ public class Flow {
             for (PendingExit exit = pendingExits.next();
                  exit != null;
                  exit = pendingExits.next()) {
-                Assert.check(exit instanceof ThrownPendingExit);
-                ThrownPendingExit thrownExit = (ThrownPendingExit) exit;
-                if (classDef != null &&
-                    classDef.pos == exit.tree.pos) {
-                    log.error(exit.tree.pos(),
-                              Errors.UnreportedExceptionDefaultConstructor(thrownExit.thrown));
-                } else if (exit.tree.hasTag(VARDEF) &&
-                        ((JCVariableDecl)exit.tree).sym.isResourceVariable()) {
-                    log.error(exit.tree.pos(),
-                              Errors.UnreportedExceptionImplicitClose(thrownExit.thrown,
-                                                                      ((JCVariableDecl)exit.tree).sym.name));
+                if (exit instanceof ThrownPendingExit) {
+                    ThrownPendingExit thrownExit = (ThrownPendingExit) exit;
+                    if (classDef != null &&
+                        classDef.pos == exit.tree.pos) {
+                        log.error(exit.tree.pos(),
+                                  Errors.UnreportedExceptionDefaultConstructor(thrownExit.thrown));
+                    } else if (exit.tree.hasTag(VARDEF) &&
+                            ((JCVariableDecl)exit.tree).sym.isResourceVariable()) {
+                        log.error(exit.tree.pos(),
+                                  Errors.UnreportedExceptionImplicitClose(thrownExit.thrown,
+                                                                          ((JCVariableDecl)exit.tree).sym.name));
+                    } else {
+                        log.error(exit.tree.pos(),
+                                  Errors.UnreportedExceptionNeedToCatchOrThrow(thrownExit.thrown));
+                    }
                 } else {
-                    log.error(exit.tree.pos(),
-                              Errors.UnreportedExceptionNeedToCatchOrThrow(thrownExit.thrown));
+                    Assert.check(log.hasErrorOn(exit.tree.pos()));
                 }
             }
         }
@@ -1257,7 +1270,8 @@ public class Flow {
                         ctypes = ctypes.append(exc);
                         if (types.isSameType(exc, syms.objectType))
                             continue;
-                        checkCaughtType(l.head.pos(), exc, thrownInTry, caughtInTry);
+                        var pos = subClauses.size() > 1 ? ct.pos() : l.head.pos();
+                        checkCaughtType(pos, exc, thrownInTry, caughtInTry);
                         caughtInTry = chk.incl(exc, caughtInTry);
                     }
                 }
@@ -1855,21 +1869,18 @@ public class Flow {
 
         /** Check that trackable variable is initialized.
          */
-        boolean checkInit(DiagnosticPosition pos, VarSymbol sym, boolean compactConstructor) {
-            return checkInit(pos, sym, Errors.VarMightNotHaveBeenInitialized(sym), compactConstructor);
+        void checkInit(DiagnosticPosition pos, VarSymbol sym) {
+            checkInit(pos, sym, Errors.VarMightNotHaveBeenInitialized(sym));
         }
 
-        boolean checkInit(DiagnosticPosition pos, VarSymbol sym, Error errkey, boolean compactConstructor) {
+        void checkInit(DiagnosticPosition pos, VarSymbol sym, Error errkey) {
             if ((sym.adr >= firstadr || sym.owner.kind != TYP) &&
                 trackable(sym) &&
-                !inits.isMember(sym.adr)) {
-                if (sym.owner.kind != TYP || !compactConstructor || !uninits.isMember(sym.adr)) {
+                !inits.isMember(sym.adr) &&
+                (sym.flags_field & CLASH) == 0) {
                     log.error(pos, errkey);
-                }
                 inits.incl(sym.adr);
-                return false;
             }
-            return true;
         }
 
         /** Utility method to reset several Bits instances.
@@ -1996,6 +2007,7 @@ public class Flow {
                         if (!l.head.hasTag(METHODDEF) &&
                             (TreeInfo.flags(l.head) & STATIC) != 0) {
                             scan(l.head);
+                            clearPendingExits(false);
                         }
                     }
 
@@ -2017,6 +2029,7 @@ public class Flow {
                         if (!l.head.hasTag(METHODDEF) &&
                             (TreeInfo.flags(l.head) & STATIC) == 0) {
                             scan(l.head);
+                            clearPendingExits(false);
                         }
                     }
 
@@ -2099,35 +2112,32 @@ public class Flow {
                                 // the ctor is default(synthesized) or not
                                 if (isSynthesized && !isCompactConstructor) {
                                     checkInit(TreeInfo.diagnosticPositionFor(var, vardecl),
-                                        var, Errors.VarNotInitializedInDefaultConstructor(var), isCompactConstructor);
-                                } else {
-                                    boolean wasInitialized = checkInit(TreeInfo.diagEndPos(tree.body), var, isCompactConstructor && tree.completesNormally);
-                                    if (!wasInitialized && var.owner.kind == TYP && isCompactConstructor && uninits.isMember(var.adr) && tree.completesNormally) {
+                                            var, Errors.VarNotInitializedInDefaultConstructor(var));
+                                } else if (isCompactConstructor) {
+                                    boolean isInstanceRecordField = var.enclClass().isRecord() &&
+                                            (var.flags_field & (Flags.PRIVATE | Flags.FINAL | Flags.GENERATED_MEMBER | Flags.RECORD)) != 0 &&
+                                            !var.isStatic() &&
+                                            var.owner.kind == TYP;
+                                    if (isInstanceRecordField) {
+                                        boolean notInitialized = !inits.isMember(var.adr);
+                                        if (notInitialized && uninits.isMember(var.adr) && tree.completesNormally) {
                                         /*  this way we indicate Lower that it should generate an initialization for this field
                                          *  in the compact constructor
                                          */
-                                        var.flags_field |= UNINITIALIZED_FIELD;
+                                            var.flags_field |= UNINITIALIZED_FIELD;
+                                        } else {
+                                            checkInit(TreeInfo.diagEndPos(tree.body), var);
+                                        }
+                                    } else {
+                                        checkInit(TreeInfo.diagnosticPositionFor(var, vardecl), var);
                                     }
+                                } else {
+                                    checkInit(TreeInfo.diagEndPos(tree.body), var);
                                 }
                             }
                         }
                     }
-                    List<PendingExit> exits = pendingExits.toList();
-                    pendingExits = new ListBuffer<>();
-                    while (exits.nonEmpty()) {
-                        PendingExit exit = exits.head;
-                        exits = exits.tail;
-                        Assert.check(exit.tree.hasTag(RETURN) ||
-                                         log.hasErrorOn(exit.tree.pos()),
-                                     exit.tree);
-                        if (isInitialConstructor) {
-                            Assert.check(exit instanceof AssignPendingExit);
-                            inits.assign(((AssignPendingExit) exit).exit_inits);
-                            for (int i = firstadr; i < nextadr; i++) {
-                                checkInit(exit.tree.pos(), vardecls[i].sym, isCompactConstructor);
-                            }
-                        }
-                    }
+                    clearPendingExits(true);
                 } finally {
                     inits.assign(initsPrev);
                     uninits.assign(uninitsPrev);
@@ -2141,6 +2151,24 @@ public class Flow {
             }
         }
 
+        private void clearPendingExits(boolean inMethod) {
+            List<PendingExit> exits = pendingExits.toList();
+            pendingExits = new ListBuffer<>();
+            while (exits.nonEmpty()) {
+                PendingExit exit = exits.head;
+                exits = exits.tail;
+                Assert.check((inMethod && exit.tree.hasTag(RETURN)) ||
+                                 log.hasErrorOn(exit.tree.pos()),
+                             exit.tree);
+                if (inMethod && isInitialConstructor) {
+                    Assert.check(exit instanceof AssignPendingExit);
+                    inits.assign(((AssignPendingExit) exit).exit_inits);
+                    for (int i = firstadr; i < nextadr; i++) {
+                        checkInit(exit.tree.pos(), vardecls[i].sym);
+                    }
+                }
+            }
+        }
         protected void initParam(JCVariableDecl def) {
             inits.incl(def.sym.adr);
             uninits.excl(def.sym.adr);
@@ -2571,7 +2599,7 @@ public class Flow {
                 recordExit(exit);
                 return ;
             } else {
-                scan(tree.value);
+                scanExpr(tree.value);
                 recordExit(new AssignPendingExit(tree, inits, uninits));
             }
         }
@@ -2666,7 +2694,7 @@ public class Flow {
             super.visitSelect(tree);
             if (TreeInfo.isThisQualifier(tree.selected) &&
                 tree.sym.kind == VAR) {
-                checkInit(tree.pos(), (VarSymbol)tree.sym, false);
+                checkInit(tree.pos(), (VarSymbol)tree.sym);
             }
         }
 
@@ -2727,9 +2755,15 @@ public class Flow {
 
         public void visitIdent(JCIdent tree) {
             if (tree.sym.kind == VAR) {
-                checkInit(tree.pos(), (VarSymbol)tree.sym, false);
+                checkInit(tree.pos(), (VarSymbol)tree.sym);
                 referenced(tree.sym);
             }
+        }
+
+        @Override
+        public void visitBindingPattern(JCBindingPattern tree) {
+            super.visitBindingPattern(tree);
+            initParam(tree.var);
         }
 
         void referenced(Symbol sym) {
@@ -2871,7 +2905,7 @@ public class Flow {
         public void visitClassDef(JCClassDecl tree) {
             JCTree prevTree = currentTree;
             try {
-                currentTree = tree.sym.isLocal() ? tree : null;
+                currentTree = tree.sym.isDirectlyOrIndirectlyLocal() ? tree : null;
                 super.visitClassDef(tree);
             } finally {
                 currentTree = prevTree;

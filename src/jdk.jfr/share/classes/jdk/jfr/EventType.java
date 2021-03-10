@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2016, 2018, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2016, 2020, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -66,11 +66,14 @@ public final class EventType {
     /**
      * Returns the field with the specified name, or {@code null} if it doesn't
      * exist.
+     * <p>
+     * It's possible to index into a nested field by using {@code "."} (for
+     * instance {@code "thread.group.parent.name}").
      *
-     * @return a value descriptor that describes the field, or <code>null</code> if
+     * @param name of the field to get, not {@code null}
+     *
+     * @return a value descriptor that describes the field, or {@code null} if
      *         the field with the specified name doesn't exist
-     *
-     * @return a value descriptor, or <code>null</code> if it doesn't exist
      */
     public ValueDescriptor getField(String name) {
         Objects.requireNonNull(name);
@@ -82,7 +85,12 @@ public final class EventType {
             }
             cache = newCache;
         }
-        return cache.get(name);
+        ValueDescriptor result = cache.get(name);
+        if (result == null) {
+            // Cache doesn't contain subfields
+            result = platformEventType.getField(name);
+        }
+        return result;
     }
 
     /**

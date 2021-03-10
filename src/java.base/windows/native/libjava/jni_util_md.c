@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2004, 2018, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2004, 2020, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -26,24 +26,39 @@
 #include <stdlib.h>
 #include <string.h>
 #include <windows.h>
+#include <psapi.h>
 #include <locale.h>
 
 #include "jni.h"
 #include "jni_util.h"
 
-static void getParent(const TCHAR *path, TCHAR *dest) {
-    char* lastSlash = max(strrchr(path, '\\'), strrchr(path, '/'));
-    if (lastSlash == NULL) {
-        *dest = 0;
-        return;
-    }
-    if (path != dest)
-        strcpy(dest, path);
-    *lastSlash = 0;
-}
-
 void* getProcessHandle() {
     return (void*)GetModuleHandle(NULL);
+}
+
+/*
+ * Windows doesn't have an RTLD_DEFAULT equivalent, so in stead we have to
+ * iterate over all the modules loaded by the process to implement the
+ * default library behaviour.
+ */
+void* findEntryInProcess(const char* name) {
+    HANDLE hProcess = GetCurrentProcess();
+
+    HMODULE hMods[1024];
+    DWORD cbNeeded; // array size in bytes
+
+    // first come, first served
+    if (EnumProcessModules(hProcess, hMods, sizeof(hMods), &cbNeeded)) {
+        for (size_t i = 0; i < (cbNeeded / sizeof(HMODULE)); i++) {
+            HMODULE mod = hMods[i];
+            FARPROC proc = GetProcAddress(mod, name);
+            if(proc != NULL) {
+                return proc;
+            }
+        }
+    }
+
+    return NULL;
 }
 
 /*

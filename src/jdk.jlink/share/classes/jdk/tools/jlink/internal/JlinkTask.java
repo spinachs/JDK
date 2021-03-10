@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2015, 2018, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2015, 2020, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -92,7 +92,6 @@ public class JlinkTask {
             // So, clear previous values, if any.
             task.options.modulePath.clear();
             String[] dirs = arg.split(File.pathSeparator);
-            int i = 0;
             Arrays.stream(dirs)
                   .map(Paths::get)
                   .forEach(task.options.modulePath::add);
@@ -230,7 +229,7 @@ public class JlinkTask {
             List<String> remaining = optionsHelper.handleOptions(this, args);
             if (remaining.size() > 0 && !options.suggestProviders) {
                 throw taskHelper.newBadArgs("err.orphan.arguments",
-                                            remaining.stream().collect(Collectors.joining(" ")))
+                                                 remaining.stream().collect(Collectors.joining(" ")))
                                 .showUsage(true);
             }
             if (options.help) {
@@ -260,8 +259,8 @@ public class JlinkTask {
                 }
 
                 if (options.modulePath.isEmpty()) {
-                     throw taskHelper.newBadArgs("err.modulepath.must.be.specified")
-                                 .showUsage(true);
+                    throw taskHelper.newBadArgs("err.modulepath.must.be.specified")
+                            .showUsage(true);
                 }
             }
 
@@ -276,8 +275,12 @@ public class JlinkTask {
             }
 
             return EXIT_OK;
+        } catch (FindException e) {
+            log.println(taskHelper.getMessage("error.prefix") + " " + e.getMessage());
+            e.printStackTrace(log);
+            return EXIT_ERROR;
         } catch (PluginException | IllegalArgumentException |
-                 UncheckedIOException |IOException | FindException | ResolutionException e) {
+                 UncheckedIOException |IOException | ResolutionException e) {
             log.println(taskHelper.getMessage("error.prefix") + " " + e.getMessage());
             if (DEBUG) {
                 e.printStackTrace(log);
@@ -731,36 +734,6 @@ public class JlinkTask {
             sb.append(c).append(" ");
         }
 
-        return sb.toString();
-    }
-
-    private static String getBomHeader() {
-        StringBuilder sb = new StringBuilder();
-        sb.append("#").append(new Date()).append("\n");
-        sb.append("#Please DO NOT Modify this file").append("\n");
-        return sb.toString();
-    }
-
-    private String genBOMContent() throws IOException {
-        StringBuilder sb = new StringBuilder();
-        sb.append(getBomHeader());
-        StringBuilder command = new StringBuilder();
-        for (String c : optionsHelper.getInputCommand()) {
-            command.append(c).append(" ");
-        }
-        sb.append("command").append(" = ").append(command);
-        sb.append("\n");
-
-        return sb.toString();
-    }
-
-    private static String genBOMContent(JlinkConfiguration config,
-            PluginsConfiguration plugins)
-            throws IOException {
-        StringBuilder sb = new StringBuilder();
-        sb.append(getBomHeader());
-        sb.append(config);
-        sb.append(plugins);
         return sb.toString();
     }
 

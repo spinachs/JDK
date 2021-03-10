@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 1997, 2017, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 1997, 2020, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -25,6 +25,7 @@
 
 package com.sun.crypto.provider;
 
+import java.nio.ByteBuffer;
 import java.security.InvalidKeyException;
 import java.security.InvalidAlgorithmParameterException;
 import javax.crypto.*;
@@ -103,7 +104,7 @@ abstract class FeedbackCipher {
                        byte[] iv) throws InvalidKeyException,
                                          InvalidAlgorithmParameterException;
 
-   /**
+    /**
      * Gets the initialization vector.
      *
      * @return the initialization vector
@@ -241,5 +242,28 @@ abstract class FeedbackCipher {
         // Currently only AEAD cipher impl, e.g. GCM, buffers data
         // internally during decryption mode
         return 0;
+    }
+
+    /*
+     * ByteBuffer methods should not be accessed as CipherCore and AESCipher
+     * copy the data to byte arrays.  These methods are to satisfy the compiler.
+     */
+    int encrypt(ByteBuffer src, ByteBuffer dst) {
+        throw new UnsupportedOperationException("ByteBuffer not supported");
+    };
+
+    int decrypt(ByteBuffer src, ByteBuffer dst) {
+        throw new UnsupportedOperationException("ByteBuffer not supported");
+    };
+
+    int encryptFinal(ByteBuffer src, ByteBuffer dst)
+        throws IllegalBlockSizeException, ShortBufferException {
+        throw new UnsupportedOperationException("ByteBuffer not supported");
+    };
+
+    int decryptFinal(ByteBuffer src, ByteBuffer dst)
+        throws IllegalBlockSizeException, AEADBadTagException,
+        ShortBufferException {
+        throw new UnsupportedOperationException("ByteBuffer not supported");
     }
 }

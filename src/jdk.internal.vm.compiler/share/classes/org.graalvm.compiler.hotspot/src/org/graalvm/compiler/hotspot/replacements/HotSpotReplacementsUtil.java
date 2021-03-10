@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2012, 2019, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2012, 2020, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -24,8 +24,8 @@
 
 package org.graalvm.compiler.hotspot.replacements;
 
-import static org.graalvm.compiler.hotspot.GraalHotSpotVMConfigBase.INJECTED_METAACCESS;
-import static org.graalvm.compiler.hotspot.GraalHotSpotVMConfigBase.INJECTED_VMCONFIG;
+import static org.graalvm.compiler.hotspot.GraalHotSpotVMConfig.INJECTED_METAACCESS;
+import static org.graalvm.compiler.hotspot.GraalHotSpotVMConfig.INJECTED_VMCONFIG;
 import static org.graalvm.compiler.hotspot.meta.HotSpotForeignCallsProviderImpl.VERIFY_OOP;
 
 import java.lang.ref.Reference;
@@ -41,6 +41,7 @@ import org.graalvm.compiler.graph.Node.ConstantNodeParameter;
 import org.graalvm.compiler.graph.Node.NodeIntrinsic;
 import org.graalvm.compiler.graph.spi.CanonicalizerTool;
 import org.graalvm.compiler.hotspot.GraalHotSpotVMConfig;
+import org.graalvm.compiler.hotspot.nodes.GraalHotSpotVMConfigNode;
 import org.graalvm.compiler.hotspot.word.KlassPointer;
 import org.graalvm.compiler.nodes.CanonicalizableLocation;
 import org.graalvm.compiler.nodes.CompressionNode;
@@ -55,7 +56,7 @@ import org.graalvm.compiler.nodes.extended.LoadHubOrNullNode;
 import org.graalvm.compiler.nodes.extended.RawLoadNode;
 import org.graalvm.compiler.nodes.extended.StoreHubNode;
 import org.graalvm.compiler.nodes.graphbuilderconf.IntrinsicContext;
-import org.graalvm.compiler.nodes.memory.Access;
+import org.graalvm.compiler.nodes.memory.AddressableMemoryAccess;
 import org.graalvm.compiler.nodes.memory.address.AddressNode;
 import org.graalvm.compiler.nodes.memory.address.OffsetAddressNode;
 import org.graalvm.compiler.nodes.type.StampTool;
@@ -99,8 +100,8 @@ public class HotSpotReplacementsUtil {
             if (base instanceof CompressionNode) {
                 base = ((CompressionNode) base).getValue();
             }
-            if (base instanceof Access) {
-                Access access = (Access) base;
+            if (base instanceof AddressableMemoryAccess) {
+                AddressableMemoryAccess access = (AddressableMemoryAccess) base;
                 if (access.getLocationIdentity().equals(HUB_LOCATION) || access.getLocationIdentity().equals(COMPRESSED_HUB_LOCATION)) {
                     AddressNode address = access.getAddress();
                     if (address instanceof OffsetAddressNode) {
@@ -124,8 +125,8 @@ public class HotSpotReplacementsUtil {
          * @return an earlier read or the original {@code read}
          */
         protected static ValueNode foldIndirection(ValueNode read, ValueNode object, LocationIdentity otherLocation) {
-            if (object instanceof Access) {
-                Access access = (Access) object;
+            if (object instanceof AddressableMemoryAccess) {
+                AddressableMemoryAccess access = (AddressableMemoryAccess) object;
                 if (access.getLocationIdentity().equals(otherLocation)) {
                     AddressNode address = access.getAddress();
                     if (address instanceof OffsetAddressNode) {
@@ -156,9 +157,13 @@ public class HotSpotReplacementsUtil {
 
     @Fold
     public static int getFieldOffset(ResolvedJavaType type, String fieldName) {
+        return getField(type, fieldName).getOffset();
+    }
+
+    private static ResolvedJavaField getField(ResolvedJavaType type, String fieldName) {
         for (ResolvedJavaField field : type.getInstanceFields(true)) {
             if (field.getName().equals(fieldName)) {
-                return field.getOffset();
+                return field;
             }
         }
         throw new GraalError("missing field " + fieldName + " in type " + type);
@@ -184,8 +189,8 @@ public class HotSpotReplacementsUtil {
     }
 
     @Fold
-    public static boolean verifyOops(@InjectedParameter GraalHotSpotVMConfig config) {
-        return config.verifyOops;
+    public static boolean useG1GC(@InjectedParameter GraalHotSpotVMConfig config) {
+        return config.useG1GC;
     }
 
     /**
@@ -299,6 +304,8 @@ public class HotSpotReplacementsUtil {
      */
     public static final LocationIdentity JAVA_THREAD_THREAD_OBJECT_LOCATION = NamedLocationIdentity.immutable("JavaThread::_threadObj");
 
+    public static final LocationIdentity JAVA_THREAD_THREAD_OBJECT_HANDLE_LOCATION = NamedLocationIdentity.immutable("JavaThread::_threadObj handle");
+
     @Fold
     public static int threadObjectOffset(@InjectedParameter GraalHotSpotVMConfig config) {
         return config.threadObjectOffset;
@@ -350,6 +357,11 @@ public class HotSpotReplacementsUtil {
     @Fold
     public static int jvmAccWrittenFlags(@InjectedParameter GraalHotSpotVMConfig config) {
         return config.jvmAccWrittenFlags;
+    }
+
+    @Fold
+    public static int jvmAccIsHiddenClass(@InjectedParameter GraalHotSpotVMConfig config) {
+        return config.jvmAccIsHiddenClass;
     }
 
     public static final LocationIdentity KLASS_LAYOUT_HELPER_LOCATION = new HotSpotOptimizingLocationIdentity("Klass::_layout_helper") {
@@ -591,38 +603,17 @@ public class HotSpotReplacementsUtil {
         return WordFactory.unsigned(ComputeObjectAddressNode.get(a, ReplacementsUtil.getArrayBaseOffset(INJECTED_METAACCESS, JavaKind.Int)));
     }
 
+    @Fold
+    public static boolean verifyBeforeOrAfterGC(@InjectedParameter GraalHotSpotVMConfig config) {
+        return config.verifyBeforeGC || config.verifyAfterGC;
+    }
+
     /**
      * Idiom for making {@link GraalHotSpotVMConfig} a constant.
      */
     @Fold
     public static int objectAlignment(@InjectedParameter GraalHotSpotVMConfig config) {
         return config.objectAlignment;
-    }
-
-    /**
-     * Calls {@link #arrayAllocationSize(int, int, int, int)} using an injected VM configuration
-     * object.
-     */
-    public static long arrayAllocationSize(int length, int headerSize, int log2ElementSize) {
-        return arrayAllocationSize(length, headerSize, log2ElementSize, objectAlignment(INJECTED_VMCONFIG));
-    }
-
-    /**
-     * Computes the size of the memory chunk allocated for an array. This size accounts for the
-     * array header size, body size and any padding after the last element to satisfy object
-     * alignment requirements.
-     *
-     * @param length the number of elements in the array
-     * @param headerSize the size of the array header
-     * @param log2ElementSize log2 of the size of an element in the array
-     * @param alignment the {@linkplain GraalHotSpotVMConfig#objectAlignment object alignment
-     *            requirement}
-     * @return the size of the memory chunk
-     */
-    public static long arrayAllocationSize(int length, int headerSize, int log2ElementSize, int alignment) {
-        long size = ((long) length << log2ElementSize) + headerSize + (alignment - 1);
-        long mask = ~(alignment - 1);
-        return size & mask;
     }
 
     @Fold
@@ -731,7 +722,7 @@ public class HotSpotReplacementsUtil {
     }
 
     public static Object verifyOop(Object object) {
-        if (verifyOops(INJECTED_VMCONFIG)) {
+        if (GraalHotSpotVMConfigNode.verifyOops()) {
             verifyOopStub(VERIFY_OOP, object);
         }
         return object;
@@ -884,9 +875,18 @@ public class HotSpotReplacementsUtil {
         return config.gcTotalCollectionsAddress();
     }
 
+    public static String referentFieldName() {
+        return "referent";
+    }
+
     @Fold
     public static long referentOffset(@InjectedParameter MetaAccessProvider metaAccessProvider) {
-        return getFieldOffset(metaAccessProvider.lookupJavaType(Reference.class), "referent");
+        return referentField(metaAccessProvider).getOffset();
+    }
+
+    @Fold
+    public static ResolvedJavaField referentField(@InjectedParameter MetaAccessProvider metaAccessProvider) {
+        return getField(referenceType(metaAccessProvider), referentFieldName());
     }
 
     @Fold

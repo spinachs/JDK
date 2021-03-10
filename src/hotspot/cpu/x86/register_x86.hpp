@@ -50,7 +50,7 @@ class RegisterImpl: public AbstractRegisterImpl {
 #else
     number_of_registers      = 16,
     number_of_byte_registers = 16,
-    max_slots_per_register   = 1
+    max_slots_per_register   = 2
 #endif // AMD64
   };
 
@@ -130,17 +130,10 @@ CONSTANT_REGISTER_DECLARATION(FloatRegister, fnoreg, (-1));
 class XMMRegisterImpl;
 typedef XMMRegisterImpl* XMMRegister;
 
-// Use MMXRegister as shortcut
-class MMXRegisterImpl;
-typedef MMXRegisterImpl* MMXRegister;
-
 inline XMMRegister as_XMMRegister(int encoding) {
   return (XMMRegister)(intptr_t)encoding;
 }
 
-inline MMXRegister as_MMXRegister(int encoding) {
-  return (MMXRegister)(intptr_t)encoding;
-}
 
 // The implementation of XMM registers for the IA32 architecture
 class XMMRegisterImpl: public AbstractRegisterImpl {
@@ -212,17 +205,6 @@ CONSTANT_REGISTER_DECLARATION(XMMRegister, xmm31,    (31));
 // can't be described in oopMaps and therefore can't be used by the compilers (at least
 // were deopt might wan't to see them).
 
-// The MMX registers, for P3 and up chips
-CONSTANT_REGISTER_DECLARATION(MMXRegister, mnoreg , (-1));
-CONSTANT_REGISTER_DECLARATION(MMXRegister, mmx0 , ( 0));
-CONSTANT_REGISTER_DECLARATION(MMXRegister, mmx1 , ( 1));
-CONSTANT_REGISTER_DECLARATION(MMXRegister, mmx2 , ( 2));
-CONSTANT_REGISTER_DECLARATION(MMXRegister, mmx3 , ( 3));
-CONSTANT_REGISTER_DECLARATION(MMXRegister, mmx4 , ( 4));
-CONSTANT_REGISTER_DECLARATION(MMXRegister, mmx5 , ( 5));
-CONSTANT_REGISTER_DECLARATION(MMXRegister, mmx6 , ( 6));
-CONSTANT_REGISTER_DECLARATION(MMXRegister, mmx7 , ( 7));
-
 // Use XMMRegister as shortcut
 class KRegisterImpl;
 typedef KRegisterImpl* KRegister;
@@ -274,10 +256,7 @@ class ConcreteRegisterImpl : public AbstractRegisterImpl {
   // There is no requirement that any ordering here matches any ordering c2 gives
   // it's optoregs.
 
-    number_of_registers = RegisterImpl::number_of_registers +
-#ifdef AMD64
-      RegisterImpl::number_of_registers +  // "H" half of a 64bit register
-#endif // AMD64
+    number_of_registers = RegisterImpl::number_of_registers * RegisterImpl::max_slots_per_register +
       2 * FloatRegisterImpl::number_of_registers +
       XMMRegisterImpl::max_slots_per_register * XMMRegisterImpl::number_of_registers +
       KRegisterImpl::number_of_registers + // mask registers

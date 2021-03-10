@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2016, 2019, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2016, 2021, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -22,6 +22,8 @@
  */
 
 #include "precompiled.hpp"
+#include "compiler/compiler_globals.hpp"
+#include "gc/shared/gc_globals.hpp"
 #include "runtime/globals.hpp"
 #include "runtime/flags/flagSetting.hpp"
 #include "runtime/flags/jvmFlag.hpp"
@@ -32,7 +34,7 @@
     ASSERT_TRUE(JVMFlag::find_flag(#f)->is_ ## type());          \
     type original_value = f;                                     \
     {                                                            \
-      FLAG_GUARD(f);                                             \
+      AutoSaveRestore<type> FLAG_GUARD(f);                       \
       f = value;                                                 \
     }                                                            \
     ASSERT_EQ(original_value, f);                                \

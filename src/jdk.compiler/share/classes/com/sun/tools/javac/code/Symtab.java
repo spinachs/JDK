@@ -54,6 +54,7 @@ import com.sun.tools.javac.code.Type.MethodType;
 import com.sun.tools.javac.code.Type.UnknownType;
 import com.sun.tools.javac.code.Types.UniqueType;
 import com.sun.tools.javac.comp.Modules;
+import com.sun.tools.javac.jvm.Target;
 import com.sun.tools.javac.util.Assert;
 import com.sun.tools.javac.util.Context;
 import com.sun.tools.javac.util.Convert;
@@ -216,8 +217,10 @@ public class Symtab {
     public final Type elementTypeType;
     public final Type functionalInterfaceType;
     public final Type previewFeatureType;
+    public final Type previewFeatureInternalType;
     public final Type typeDescriptorType;
     public final Type recordType;
+    public final Type valueBasedType;
 
     /** The symbol representing the length field of an array.
      */
@@ -389,7 +392,10 @@ public class Symtab {
 
         MissingInfoHandler missingInfoHandler = MissingInfoHandler.instance(context);
 
-        rootPackage = new RootPackageSymbol(names.empty, null, missingInfoHandler);
+        Target target = Target.instance(context);
+        rootPackage = new RootPackageSymbol(names.empty, null,
+                                            missingInfoHandler,
+                                            target.runtimeUseNestAccess());
 
         // create the basic builtin symbols
         unnamedModule = new ModuleSymbol(names.empty, null) {
@@ -575,9 +581,11 @@ public class Symtab {
         lambdaMetafactory = enterClass("java.lang.invoke.LambdaMetafactory");
         stringConcatFactory = enterClass("java.lang.invoke.StringConcatFactory");
         functionalInterfaceType = enterClass("java.lang.FunctionalInterface");
-        previewFeatureType = enterClass("jdk.internal.PreviewFeature");
+        previewFeatureType = enterClass("jdk.internal.javac.PreviewFeature");
+        previewFeatureInternalType = enterSyntheticAnnotation("jdk.internal.PreviewFeature+Annotation");
         typeDescriptorType = enterClass("java.lang.invoke.TypeDescriptor");
         recordType = enterClass("java.lang.Record");
+        valueBasedType = enterClass("jdk.internal.ValueBased");
 
         synthesizeEmptyInterfaceIfMissing(autoCloseableType);
         synthesizeEmptyInterfaceIfMissing(cloneableType);

@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 1999, 2019, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 1999, 2021, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -220,7 +220,11 @@ public class Flags {
      */
     public static final long UNION = 1L<<39;
 
-    // Flag bit (1L << 40) is available.
+    /**
+     * Flags an erroneous TypeSymbol as viable for recovery.
+     * TypeSymbols only.
+     */
+    public static final long RECOVERABLE = 1L<<40;
 
     /**
      * Flag that marks an 'effectively final' local variable.
@@ -228,7 +232,8 @@ public class Flags {
     public static final long EFFECTIVELY_FINAL = 1L<<41;
 
     /**
-     * Flag that marks non-override equivalent methods with the same signature.
+     * Flag that marks non-override equivalent methods with the same signature,
+     * or a conflicting match binding (BindingSymbol).
      */
     public static final long CLASH = 1L<<42;
 
@@ -332,7 +337,7 @@ public class Flags {
     /**
      * Flag to indicate the API element in question is for a preview API.
      */
-    public static final long PREVIEW_ESSENTIAL_API = 1L<<58; //any Symbol kind
+    public static final long PREVIEW_REFLECTIVE = 1L<<58; //any Symbol kind
 
     /**
      * Flag to indicate the given variable is a match binding variable.
@@ -365,33 +370,46 @@ public class Flags {
      */
     public static final int GENERATED_MEMBER = 1<<24; // MethodSymbols and VarSymbols
 
+    /**
+     * Flag to indicate sealed class/interface declaration.
+     */
+    public static final long SEALED = 1L<<62; // ClassSymbols
+
+    /**
+     * Flag to indicate that the class/interface was declared with the non-sealed modifier.
+     */
+    public static final long NON_SEALED = 1L<<63; // ClassSymbols
+
     /** Modifier masks.
      */
     public static final int
-        AccessFlags           = PUBLIC | PROTECTED | PRIVATE,
-        LocalClassFlags       = FINAL | ABSTRACT | STRICTFP | ENUM | SYNTHETIC,
-        LocalRecordFlags      = LocalClassFlags | STATIC,
-        MemberClassFlags      = LocalClassFlags | INTERFACE | AccessFlags,
-        MemberRecordFlags     = MemberClassFlags | STATIC,
-        ClassFlags            = LocalClassFlags | INTERFACE | PUBLIC | ANNOTATION,
-        InterfaceVarFlags     = FINAL | STATIC | PUBLIC,
-        VarFlags              = AccessFlags | FINAL | STATIC |
-                                VOLATILE | TRANSIENT | ENUM,
-        ConstructorFlags      = AccessFlags,
-        InterfaceMethodFlags  = ABSTRACT | PUBLIC,
-        MethodFlags           = AccessFlags | ABSTRACT | STATIC | NATIVE |
-                                SYNCHRONIZED | FINAL | STRICTFP,
-        RecordMethodFlags     = AccessFlags | ABSTRACT | STATIC |
-                                SYNCHRONIZED | FINAL | STRICTFP;
+        AccessFlags                       = PUBLIC | PROTECTED | PRIVATE,
+        LocalClassFlags                   = FINAL | ABSTRACT | STRICTFP | ENUM | SYNTHETIC,
+        StaticLocalFlags                  = LocalClassFlags | STATIC | INTERFACE,
+        MemberClassFlags                  = LocalClassFlags | INTERFACE | AccessFlags,
+        MemberStaticClassFlags            = MemberClassFlags | STATIC,
+        ClassFlags                        = LocalClassFlags | INTERFACE | PUBLIC | ANNOTATION,
+        InterfaceVarFlags                 = FINAL | STATIC | PUBLIC,
+        VarFlags                          = AccessFlags | FINAL | STATIC |
+                                            VOLATILE | TRANSIENT | ENUM,
+        ConstructorFlags                  = AccessFlags,
+        InterfaceMethodFlags              = ABSTRACT | PUBLIC,
+        MethodFlags                       = AccessFlags | ABSTRACT | STATIC | NATIVE |
+                                            SYNCHRONIZED | FINAL | STRICTFP,
+        RecordMethodFlags                 = AccessFlags | ABSTRACT | STATIC |
+                                            SYNCHRONIZED | FINAL | STRICTFP;
     public static final long
-        ExtendedStandardFlags       = (long)StandardFlags | DEFAULT,
-        ModifierFlags               = ((long)StandardFlags & ~INTERFACE) | DEFAULT,
-        InterfaceMethodMask         = ABSTRACT | PRIVATE | STATIC | PUBLIC | STRICTFP | DEFAULT,
-        AnnotationTypeElementMask   = ABSTRACT | PUBLIC,
-        LocalVarFlags               = FINAL | PARAMETER,
-        ReceiverParamFlags          = PARAMETER;
+        ExtendedStandardFlags             = (long)StandardFlags | DEFAULT | SEALED | NON_SEALED,
+        ExtendedMemberClassFlags          = (long)MemberClassFlags | SEALED | NON_SEALED,
+        ExtendedMemberStaticClassFlags    = (long) MemberStaticClassFlags | SEALED | NON_SEALED,
+        ExtendedClassFlags                = (long)ClassFlags | SEALED | NON_SEALED,
+        ModifierFlags                     = ((long)StandardFlags & ~INTERFACE) | DEFAULT | SEALED | NON_SEALED,
+        InterfaceMethodMask               = ABSTRACT | PRIVATE | STATIC | PUBLIC | STRICTFP | DEFAULT,
+        AnnotationTypeElementMask         = ABSTRACT | PUBLIC,
+        LocalVarFlags                     = FINAL | PARAMETER,
+        ReceiverParamFlags                = PARAMETER;
 
-
+    @SuppressWarnings("preview")
     public static Set<Modifier> asModifierSet(long flags) {
         Set<Modifier> modifiers = modifierSets.get(flags);
         if (modifiers == null) {
@@ -401,6 +419,9 @@ public class Flags {
             if (0 != (flags & PRIVATE))   modifiers.add(Modifier.PRIVATE);
             if (0 != (flags & ABSTRACT))  modifiers.add(Modifier.ABSTRACT);
             if (0 != (flags & STATIC))    modifiers.add(Modifier.STATIC);
+            if (0 != (flags & SEALED))    modifiers.add(Modifier.SEALED);
+            if (0 != (flags & NON_SEALED))
+                                          modifiers.add(Modifier.NON_SEALED);
             if (0 != (flags & FINAL))     modifiers.add(Modifier.FINAL);
             if (0 != (flags & TRANSIENT)) modifiers.add(Modifier.TRANSIENT);
             if (0 != (flags & VOLATILE))  modifiers.add(Modifier.VOLATILE);
@@ -488,10 +509,18 @@ public class Flags {
         ANONCONSTR_BASED(Flags.ANONCONSTR_BASED),
         NAME_FILLED(Flags.NAME_FILLED),
         PREVIEW_API(Flags.PREVIEW_API),
-        PREVIEW_ESSENTIAL_API(Flags.PREVIEW_ESSENTIAL_API),
+        PREVIEW_REFLECTIVE(Flags.PREVIEW_REFLECTIVE),
         MATCH_BINDING(Flags.MATCH_BINDING),
         MATCH_BINDING_TO_OUTER(Flags.MATCH_BINDING_TO_OUTER),
-        RECORD(Flags.RECORD);
+        RECORD(Flags.RECORD),
+        RECOVERABLE(Flags.RECOVERABLE),
+        SEALED(Flags.SEALED),
+        NON_SEALED(Flags.NON_SEALED) {
+            @Override
+            public String toString() {
+                return "non-sealed";
+            }
+        };
 
         Flag(long flag) {
             this.value = flag;

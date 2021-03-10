@@ -105,13 +105,6 @@ class LIR_Assembler: public CompilationResourceObj {
   ImplicitNullCheckStub* add_debug_info_for_null_check(int pc_offset, CodeEmitInfo* cinfo);
   ImplicitNullCheckStub* add_debug_info_for_null_check_here(CodeEmitInfo* info);
 
-  void set_24bit_FPU();
-  void reset_FPU();
-  void fpop();
-  void fxch(int i);
-  void fld(int i);
-  void ffree(int i);
-
   void breakpoint();
   void push(LIR_Opr opr);
   void pop(LIR_Opr opr);
@@ -164,7 +157,7 @@ class LIR_Assembler: public CompilationResourceObj {
   // particular sparc uses this for delay slot filling.
   void peephole(LIR_List* list);
 
-  void return_op(LIR_Opr result);
+  void return_op(LIR_Opr result, C1SafepointPollStub* code_stub);
 
   // returns offset of poll instruction
   int safepoint_poll(LIR_Opr result, CodeEmitInfo* info);

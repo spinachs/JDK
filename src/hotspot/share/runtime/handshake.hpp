@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2017, 2019, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2017, 2020, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -28,73 +28,99 @@
 #include "memory/allocation.hpp"
 #include "memory/iterator.hpp"
 #include "runtime/flags/flagSetting.hpp"
-#include "runtime/semaphore.hpp"
+#include "runtime/mutex.hpp"
+#include "utilities/filterQueue.hpp"
 
+class HandshakeOperation;
 class JavaThread;
 
-// A handshake closure is a callback that is executed for each JavaThread
-// while that thread is in a safepoint safe state. The callback is executed
-// either by the thread itself or by the VM thread while keeping the thread
-// in a blocked state. A handshake can be performed with a single
-// JavaThread as well.
-class HandshakeClosure : public ThreadClosure {
+// A handshake closure is a callback that is executed for a JavaThread
+// while it is in a safepoint/handshake-safe state. Depending on the
+// nature of the closure, the callback may be executed by the initiating
+// thread, the target thread, or the VMThread. If the callback is not executed
+// by the target thread it will remain in a blocked state until the callback completes.
+class HandshakeClosure : public ThreadClosure, public CHeapObj<mtThread> {
   const char* const _name;
  public:
   HandshakeClosure(const char* name) : _name(name) {}
-  const char* name() const {
-    return _name;
-  }
+  virtual ~HandshakeClosure() {}
+  const char* name() const    { return _name; }
+  virtual bool is_async()     { return false; }
   virtual void do_thread(Thread* thread) = 0;
+};
+
+class AsyncHandshakeClosure : public HandshakeClosure {
+ public:
+   AsyncHandshakeClosure(const char* name) : HandshakeClosure(name) {}
+   virtual ~AsyncHandshakeClosure() {}
+   virtual bool is_async()          { return true; }
 };
 
 class Handshake : public AllStatic {
  public:
   // Execution of handshake operation
-  static void execute(HandshakeClosure* hs_cl);
-  static bool execute(HandshakeClosure* hs_cl, JavaThread* target);
+  static void execute(HandshakeClosure*       hs_cl);
+  static void execute(HandshakeClosure*       hs_cl, JavaThread* target);
+  static void execute(AsyncHandshakeClosure* hs_cl, JavaThread* target);
 };
 
-class HandshakeOperation;
-
-// The HandshakeState keep tracks of an ongoing handshake for one JavaThread.
-// VM thread and JavaThread are serialized with the semaphore making sure
-// the operation is only done by either VM thread on behalf of the JavaThread
-// or the JavaThread itself.
+// The HandshakeState keeps track of an ongoing handshake for this JavaThread.
+// VMThread/Handshaker and JavaThread are serialized with _lock making sure the
+// operation is only done by either VMThread/Handshaker on behalf of the
+// JavaThread or by the target JavaThread itself.
 class HandshakeState {
-  HandshakeOperation* volatile _operation;
+  // This a back reference to the JavaThread,
+  // the target for all operation in the queue.
+  JavaThread* _handshakee;
+  // The queue containing handshake operations to be performed on _handshakee.
+  FilterQueue<HandshakeOperation*> _queue;
+  // Provides mutual exclusion to this state and queue.
+  Mutex   _lock;
+  // Set to the thread executing the handshake operation.
+  Thread* _active_handshaker;
 
-  Semaphore _semaphore;
-  bool _thread_in_process_handshake;
+  bool claim_handshake();
+  bool possibly_can_process_handshake();
+  bool can_process_handshake();
+  void process_self_inner();
 
-  bool claim_handshake_for_vmthread();
-  bool vmthread_can_process_handshake(JavaThread* target);
+  bool have_non_self_executable_operation();
+  HandshakeOperation* pop_for_self();
+  HandshakeOperation* pop();
 
-  void clear_handshake(JavaThread* thread);
+ public:
+  HandshakeState(JavaThread* thread);
 
-  void process_self_inner(JavaThread* thread);
-public:
-  HandshakeState();
+  void add_operation(HandshakeOperation* op);
 
-  void set_operation(JavaThread* thread, HandshakeOperation* op);
-
-  bool has_operation() const {
-    return _operation != NULL;
+  bool has_operation() {
+    return !_queue.is_empty();
   }
 
-  void process_by_self(JavaThread* thread) {
-    if (!_thread_in_process_handshake) {
-      FlagSetting fs(_thread_in_process_handshake, true);
-      process_self_inner(thread);
-    }
+  // Both _queue and _lock must be checked. If a thread has seen this _handshakee
+  // as safe it will execute all possible handshake operations in a loop while
+  // holding _lock. We use lock free addition to the queue, which means it is
+  // possible for the queue to be seen as empty by _handshakee but as non-empty
+  // by the thread executing in the loop. To avoid the _handshakee continuing
+  // while handshake operations are being executed, the _handshakee
+  // must take slow path, process_by_self(), if _lock is held.
+  bool should_process() {
+    return !_queue.is_empty() || _lock.is_locked();
   }
 
-  bool try_process_by_vmThread(JavaThread* target);
+  void process_by_self();
 
-#ifdef ASSERT
-  bool _vmthread_processing_handshake;
-  bool is_vmthread_processing_handshake() const { return _vmthread_processing_handshake; }
-#endif
+  enum ProcessResult {
+    _no_operation = 0,
+    _not_safe,
+    _claim_failed,
+    _processed,
+    _succeeded,
+    _number_states
+  };
+  ProcessResult try_process(HandshakeOperation* match_op);
 
+  Thread* active_handshaker() const { return _active_handshaker; }
 };
 
 #endif // SHARE_RUNTIME_HANDSHAKE_HPP

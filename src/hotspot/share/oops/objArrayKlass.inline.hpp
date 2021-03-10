@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2010, 2019, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2010, 2020, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -27,8 +27,8 @@
 
 #include "memory/memRegion.hpp"
 #include "memory/iterator.hpp"
-#include "oops/arrayOop.inline.hpp"
 #include "oops/arrayKlass.hpp"
+#include "oops/arrayOop.hpp"
 #include "oops/klass.hpp"
 #include "oops/objArrayKlass.hpp"
 #include "oops/objArrayOop.inline.hpp"
@@ -37,7 +37,7 @@
 
 template <typename T, class OopClosureType>
 void ObjArrayKlass::oop_oop_iterate_elements(objArrayOop a, OopClosureType* closure) {
-  T* p         = (T*)a->base_raw();
+  T* p         = (T*)a->base();
   T* const end = p + a->length();
 
   for (;p < end; p++) {
@@ -52,7 +52,7 @@ void ObjArrayKlass::oop_oop_iterate_elements_bounded(
   T* const l = (T*)low;
   T* const h = (T*)high;
 
-  T* p   = (T*)a->base_raw();
+  T* p   = (T*)a->base();
   T* end = p + a->length();
 
   if (p < l) {
@@ -101,8 +101,8 @@ void ObjArrayKlass::oop_oop_iterate_bounded(oop obj, OopClosureType* closure, Me
 // for objArrayOops.
 template <typename T, class OopClosureType>
 void ObjArrayKlass::oop_oop_iterate_range(objArrayOop a, OopClosureType* closure, int start, int end) {
-  T* low = start == 0 ? cast_from_oop<T*>(a) : a->obj_at_addr_raw<T>(start);
-  T* high = (T*)a->base_raw() + end;
+  T* low = (T*)a->base() + start;
+  T* high = (T*)a->base() + end;
 
   oop_oop_iterate_elements_bounded<T>(a, closure, low, high);
 }

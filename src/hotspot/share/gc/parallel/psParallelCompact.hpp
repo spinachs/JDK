@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2005, 2019, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2005, 2021, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -40,9 +40,7 @@ class PSAdaptiveSizePolicy;
 class PSYoungGen;
 class PSOldGen;
 class ParCompactionManager;
-class ParallelTaskTerminator;
 class PSParallelCompact;
-class PreGCValues;
 class MoveAndUpdateClosure;
 class RefProcTaskExecutor;
 class ParallelOldTracer;
@@ -427,7 +425,7 @@ public:
   inline size_t     block(const BlockData* block_ptr) const;
 
   void add_obj(HeapWord* addr, size_t len);
-  void add_obj(oop p, size_t len) { add_obj((HeapWord*)p, len); }
+  void add_obj(oop p, size_t len) { add_obj(cast_from_oop<HeapWord*>(p), len); }
 
   // Fill in the regions covering [beg, end) so that no data moves; i.e., the
   // destination of region n is simply the start of region n.  The argument beg
@@ -468,7 +466,7 @@ public:
   size_t     block_offset(const HeapWord* addr) const;
   size_t     addr_to_block_idx(const HeapWord* addr) const;
   size_t     addr_to_block_idx(const oop obj) const {
-    return addr_to_block_idx((HeapWord*) obj);
+    return addr_to_block_idx(cast_from_oop<HeapWord*>(obj));
   }
   inline BlockData* addr_to_block_ptr(const HeapWord* addr) const;
   inline HeapWord*  block_to_addr(size_t block) const;
@@ -482,10 +480,10 @@ public:
   HeapWord* partial_obj_end(size_t region_idx) const;
 
   // Return the location of the object after compaction.
-  HeapWord* calc_new_pointer(HeapWord* addr, ParCompactionManager* cm);
+  HeapWord* calc_new_pointer(HeapWord* addr, ParCompactionManager* cm) const;
 
-  HeapWord* calc_new_pointer(oop p, ParCompactionManager* cm) {
-    return calc_new_pointer((HeapWord*) p, cm);
+  HeapWord* calc_new_pointer(oop p, ParCompactionManager* cm) const {
+    return calc_new_pointer(cast_from_oop<HeapWord*>(p), cm);
   }
 
 #ifdef  ASSERT
@@ -881,15 +879,9 @@ inline void ParMarkBitMapClosure::decrement_words_remaining(size_t words) {
   _words_remaining -= words;
 }
 
-// The UseParallelOldGC collector is a stop-the-world garbage collector that
+// The Parallel collector is a stop-the-world garbage collector that
 // does parts of the collection using parallel threads.  The collection includes
-// the tenured generation and the young generation.  The permanent generation is
-// collected at the same time as the other two generations but the permanent
-// generation is collect by a single GC thread.  The permanent generation is
-// collected serially because of the requirement that during the processing of a
-// klass AAA, any objects reference by AAA must already have been processed.
-// This requirement is enforced by a left (lower address) to right (higher
-// address) sliding compaction.
+// the tenured generation and the young generation.
 //
 // There are four phases of the collection.
 //
@@ -1017,7 +1009,6 @@ class PSParallelCompact : AllStatic {
   static elapsedTimer         _accumulated_time;
   static unsigned int         _total_invocations;
   static unsigned int         _maximum_compaction_gc_num;
-  static jlong                _time_of_last_gc;   // ms
   static CollectorCounters*   _counters;
   static ParMarkBitMap        _mark_bitmap;
   static ParallelCompactData  _summary_data;
@@ -1116,7 +1107,7 @@ class PSParallelCompact : AllStatic {
   static void summary_phase(ParCompactionManager* cm, bool maximum_compaction);
 
   // Adjust addresses in roots.  Does not adjust addresses in heap.
-  static void adjust_roots(ParCompactionManager* cm);
+  static void adjust_roots();
 
   DEBUG_ONLY(static void write_block_fill_histogram();)
 
@@ -1130,15 +1121,6 @@ class PSParallelCompact : AllStatic {
   // Add dense prefix update tasks to the task queue.
   static void enqueue_dense_prefix_tasks(TaskQueue& task_queue,
                                          uint parallel_gc_threads);
-
-  // If objects are left in eden after a collection, try to move the boundary
-  // and absorb them into the old gen.  Returns true if eden was emptied.
-  static bool absorb_live_data_from_eden(PSAdaptiveSizePolicy* size_policy,
-                                         PSYoungGen* young_gen,
-                                         PSOldGen* old_gen);
-
-  // Reset time since last full gc
-  static void reset_millis_since_last_gc();
 
 #ifndef PRODUCT
   // Print generic summary data
@@ -1162,7 +1144,7 @@ class PSParallelCompact : AllStatic {
   static bool initialize();
 
   // Closure accessors
-  static BoolObjectClosure* is_alive_closure()     { return (BoolObjectClosure*)&_is_alive_closure; }
+  static BoolObjectClosure* is_alive_closure()     { return &_is_alive_closure; }
 
   // Public accessors
   static elapsedTimer* accumulated_time() { return &_accumulated_time; }
@@ -1262,9 +1244,6 @@ class PSParallelCompact : AllStatic {
 
   // Return the SpaceId for the given address.
   static SpaceId space_id(HeapWord* addr);
-
-  // Time since last full gc (in milliseconds).
-  static jlong millis_since_last_gc();
 
   static void print_on_error(outputStream* st);
 

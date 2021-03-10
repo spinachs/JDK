@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2015, 2019, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2015, 2021, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -406,7 +406,7 @@ final class ClientHello {
             ProtocolVersion maxProtocolVersion = chc.maximumActiveProtocol;
 
             // session ID of the ClientHello message
-            SessionId sessionId = SSLSessionImpl.nullSession.getSessionId();
+            SessionId sessionId = new SessionId(new byte[0]);
 
             // a list of cipher suites sent by the client
             List<CipherSuite> cipherSuites = chc.activeCipherSuites;
@@ -558,7 +558,7 @@ final class ClientHello {
                         cipherSuites = Arrays.asList(sessionSuite,
                             CipherSuite.TLS_EMPTY_RENEGOTIATION_INFO_SCSV);
                     } else {    // otherwise, use renegotiation_info extension
-                        cipherSuites = Arrays.asList(sessionSuite);
+                        cipherSuites = List.of(sessionSuite);
                     }
 
                     if (SSLLogger.isOn &&
@@ -1076,7 +1076,7 @@ final class ClientHello {
             // Check and launch ClientHello extensions.
             SSLExtension[] extTypes = shc.sslConfig.getExclusiveExtensions(
                     SSLHandshake.CLIENT_HELLO,
-                    Arrays.asList(SSLExtension.CH_SESSION_TICKET));
+                    List.of(SSLExtension.CH_SESSION_TICKET));
             clientHello.extensions.consumeOnLoad(shc, extTypes);
 
             //
@@ -1139,6 +1139,20 @@ final class ClientHello {
             // The consuming happens in server side only.
             ServerHandshakeContext shc = (ServerHandshakeContext)context;
             ClientHelloMessage clientHello = (ClientHelloMessage)message;
+
+            // [RFC 8446] TLS 1.3 forbids renegotiation. If a server has
+            // negotiated TLS 1.3 and receives a ClientHello at any other
+            // time, it MUST terminate the connection with an
+            // "unexpected_message" alert.
+            if (shc.conContext.isNegotiated) {
+                throw shc.conContext.fatal(Alert.UNEXPECTED_MESSAGE,
+                        "Received unexpected renegotiation handshake message");
+            }
+
+            if (clientHello.clientVersion != ProtocolVersion.TLS12.id) {
+                throw shc.conContext.fatal(Alert.PROTOCOL_VERSION,
+                        "The ClientHello.legacy_version field is not TLS 1.2");
+            }
 
             // The client may send a dummy change_cipher_spec record
             // immediately after the first ClientHello.

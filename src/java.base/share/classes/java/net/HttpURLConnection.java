@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 1996, 2019, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 1996, 2020, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -424,11 +424,11 @@ public abstract class HttpURLConnection extends URLConnection {
      * @see #getInstanceFollowRedirects
      * @since 1.3
      */
-     public void setInstanceFollowRedirects(boolean followRedirects) {
+    public void setInstanceFollowRedirects(boolean followRedirects) {
         instanceFollowRedirects = followRedirects;
-     }
+    }
 
-     /**
+    /**
      * Returns the value of this {@code HttpURLConnection}'s
      * {@code instanceFollowRedirects} field.
      *
@@ -438,9 +438,9 @@ public abstract class HttpURLConnection extends URLConnection {
      * @see #setInstanceFollowRedirects(boolean)
      * @since 1.3
      */
-     public boolean getInstanceFollowRedirects() {
-         return instanceFollowRedirects;
-     }
+    public boolean getInstanceFollowRedirects() {
+        return instanceFollowRedirects;
+    }
 
     /**
      * Set the method for the URL request, one of:
@@ -511,7 +511,7 @@ public abstract class HttpURLConnection extends URLConnection {
      */
     public int getResponseCode() throws IOException {
         /*
-         * We're got the response code already
+         * We've got the response code already
          */
         if (responseCode != -1) {
             return responseCode;
@@ -530,7 +530,7 @@ public abstract class HttpURLConnection extends URLConnection {
         }
 
         /*
-         * If we can't a status-line then re-throw any exception
+         * If we can't find a status-line then re-throw any exception
          * that getInputStream threw.
          */
         String statusLine = getHeaderField(0);

@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2010, 2019, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2010, 2020, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -62,6 +62,10 @@ public class DisabledAlgorithmConstraints extends AbstractAlgorithmConstraints {
     // Disabled algorithm security property for certificate path
     public static final String PROPERTY_CERTPATH_DISABLED_ALGS =
             "jdk.certpath.disabledAlgorithms";
+
+    // Legacy algorithm security property for certificate path and jar
+    public static final String PROPERTY_SECURITY_LEGACY_ALGS =
+            "jdk.security.legacyAlgorithms";
 
     // Disabled algorithm security property for TLS
     public static final String PROPERTY_TLS_DISABLED_ALGS =
@@ -128,6 +132,11 @@ public class DisabledAlgorithmConstraints extends AbstractAlgorithmConstraints {
     @Override
     public final boolean permits(Set<CryptoPrimitive> primitives,
             String algorithm, AlgorithmParameters parameters) {
+        if (primitives == null || primitives.isEmpty()) {
+            throw new IllegalArgumentException("The primitives cannot be null" +
+                    " or empty.");
+        }
+
         if (!checkAlgorithm(disabledAlgorithms, algorithm, decomposer)) {
             return false;
         }
@@ -216,7 +225,11 @@ public class DisabledAlgorithmConstraints extends AbstractAlgorithmConstraints {
     private boolean checkConstraints(Set<CryptoPrimitive> primitives,
             String algorithm, Key key, AlgorithmParameters parameters) {
 
-        // check the key parameter, it cannot be null.
+        if (primitives == null || primitives.isEmpty()) {
+            throw new IllegalArgumentException("The primitives cannot be null" +
+                    " or empty.");
+        }
+
         if (key == null) {
             throw new IllegalArgumentException("The key cannot be null");
         }
@@ -287,15 +300,16 @@ public class DisabledAlgorithmConstraints extends AbstractAlgorithmConstraints {
                 int space = constraintEntry.indexOf(' ');
                 String algorithm = AlgorithmDecomposer.hashName(
                         ((space > 0 ? constraintEntry.substring(0, space) :
-                                constraintEntry).
-                                toUpperCase(Locale.ENGLISH)));
+                                constraintEntry)));
                 List<Constraint> constraintList =
-                        constraintsMap.getOrDefault(algorithm,
+                        constraintsMap.getOrDefault(
+                                algorithm.toUpperCase(Locale.ENGLISH),
                                 new ArrayList<>(1));
 
                 // Consider the impact of algorithm aliases.
                 for (String alias : AlgorithmDecomposer.getAliases(algorithm)) {
-                    constraintsMap.putIfAbsent(alias, constraintList);
+                    constraintsMap.putIfAbsent(
+                            alias.toUpperCase(Locale.ENGLISH), constraintList);
                 }
 
                 // If there is no whitespace, it is a algorithm name; however,
@@ -387,7 +401,7 @@ public class DisabledAlgorithmConstraints extends AbstractAlgorithmConstraints {
 
         // Get applicable constraints based off the signature algorithm
         private List<Constraint> getConstraints(String algorithm) {
-            return constraintsMap.get(algorithm);
+            return constraintsMap.get(algorithm.toUpperCase(Locale.ENGLISH));
         }
 
         // Check if KeySizeConstraints permit the specified key
@@ -442,6 +456,7 @@ public class DisabledAlgorithmConstraints extends AbstractAlgorithmConstraints {
             Set<String> algorithms = new HashSet<>();
             if (algorithm != null) {
                 algorithms.addAll(AlgorithmDecomposer.decomposeOneHash(algorithm));
+                algorithms.add(algorithm);
             }
 
             // Attempt to add the public key algorithm if cert provided
@@ -939,4 +954,3 @@ public class DisabledAlgorithmConstraints extends AbstractAlgorithmConstraints {
         }
     }
 }
-

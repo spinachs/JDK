@@ -63,14 +63,6 @@ const Type* ConstraintCastNode::Value(PhaseGVN* phase) const {
       if (rt->empty())       assert(ft == Type::TOP, "special case #2");
       break;
     }
-    case Op_CastLL:
-    {
-      const Type* t1 = phase->type(in(1));
-      if (t1 == Type::TOP)   assert(ft == Type::TOP, "special case #1");
-      const Type* rt = t1->join_speculative(_type);
-      if (rt->empty())       assert(ft == Type::TOP, "special case #2");
-      break;
-    }
     case Op_CastPP:
     if (phase->type(in(1)) == TypePtr::NULL_PTR &&
         _type->isa_ptr() && _type->is_ptr()->_ptr == TypePtr::NotNull)
@@ -117,6 +109,20 @@ Node* ConstraintCastNode::make_cast(int opcode, Node* c, Node *n, const Type *t,
   case Op_CheckCastPP: return new CheckCastPPNode(c, n, t, carry_dependency);
   default:
     fatal("Bad opcode %d", opcode);
+  }
+  return NULL;
+}
+
+Node* ConstraintCastNode::make(Node* c, Node *n, const Type *t, BasicType bt) {
+  switch(bt) {
+  case T_INT: {
+    return make_cast(Op_CastII, c, n, t, false);
+  }
+  case T_LONG: {
+    return make_cast(Op_CastLL, c, n, t, false);
+  }
+  default:
+    fatal("Bad basic type %s", type2name(bt));
   }
   return NULL;
 }
@@ -234,45 +240,102 @@ const Type* CastIINode::Value(PhaseGVN* phase) const {
   return res;
 }
 
+static Node* find_or_make_CastII(PhaseIterGVN* igvn, Node* parent, Node* control,
+                                 const TypeInt* type) {
+  Node* n = new CastIINode(parent, type);
+  n->set_req(0, control);
+  Node* existing = igvn->hash_find_insert(n);
+  if (existing != NULL) {
+    n->destruct(igvn);
+    return existing;
+  }
+  return igvn->register_new_node_with_optimizer(n);
+}
+
 Node *CastIINode::Ideal(PhaseGVN *phase, bool can_reshape) {
   Node* progress = ConstraintCastNode::Ideal(phase, can_reshape);
   if (progress != NULL) {
     return progress;
   }
 
+  PhaseIterGVN *igvn = phase->is_IterGVN();
+  const TypeInt* this_type = this->type()->is_int();
+  Node* z = in(1);
+  const TypeInteger* rx = NULL;
+  const TypeInteger* ry = NULL;
+  // Similar to ConvI2LNode::Ideal() for the same reasons
+  if (!_range_check_dependency && Compile::push_thru_add(phase, z, this_type, rx, ry, T_INT)) {
+    if (igvn == NULL) {
+      // Postpone this optimization to iterative GVN, where we can handle deep
+      // AddI chains without an exponential number of recursive Ideal() calls.
+      phase->record_for_igvn(this);
+      return NULL;
+    }
+    int op = z->Opcode();
+    Node* x = z->in(1);
+    Node* y = z->in(2);
+
+    Node* cx = find_or_make_CastII(igvn, x, in(0), rx->is_int());
+    Node* cy = find_or_make_CastII(igvn, y, in(0), ry->is_int());
+    switch (op) {
+      case Op_AddI:  return new AddINode(cx, cy);
+      case Op_SubI:  return new SubINode(cx, cy);
+      default:       ShouldNotReachHere();
+    }
+  }
+
   // Similar to ConvI2LNode::Ideal() for the same reasons
   // Do not narrow the type of range check dependent CastIINodes to
   // avoid corruption of the graph if a CastII is replaced by TOP but
   // the corresponding range check is not removed.
-  if (can_reshape && !_range_check_dependency && !phase->C->major_progress()) {
-    const TypeInt* this_type = this->type()->is_int();
-    const TypeInt* in_type = phase->type(in(1))->isa_int();
-    if (in_type != NULL && this_type != NULL &&
-        (in_type->_lo != this_type->_lo ||
-         in_type->_hi != this_type->_hi)) {
-      jint lo1 = this_type->_lo;
-      jint hi1 = this_type->_hi;
-      int w1  = this_type->_widen;
+  if (can_reshape && !_range_check_dependency) {
+    if (phase->C->post_loop_opts_phase()) {
+      const TypeInt* this_type = this->type()->is_int();
+      const TypeInt* in_type = phase->type(in(1))->isa_int();
+      if (in_type != NULL && this_type != NULL &&
+          (in_type->_lo != this_type->_lo ||
+           in_type->_hi != this_type->_hi)) {
+        jint lo1 = this_type->_lo;
+        jint hi1 = this_type->_hi;
+        int w1  = this_type->_widen;
 
-      if (lo1 >= 0) {
-        // Keep a range assertion of >=0.
-        lo1 = 0;        hi1 = max_jint;
-      } else if (hi1 < 0) {
-        // Keep a range assertion of <0.
-        lo1 = min_jint; hi1 = -1;
-      } else {
-        lo1 = min_jint; hi1 = max_jint;
+        if (lo1 >= 0) {
+          // Keep a range assertion of >=0.
+          lo1 = 0;        hi1 = max_jint;
+        } else if (hi1 < 0) {
+          // Keep a range assertion of <0.
+          lo1 = min_jint; hi1 = -1;
+        } else {
+          lo1 = min_jint; hi1 = max_jint;
+        }
+        const TypeInt* wtype = TypeInt::make(MAX2(in_type->_lo, lo1),
+                                             MIN2(in_type->_hi, hi1),
+                                             MAX2((int)in_type->_widen, w1));
+        if (wtype != type()) {
+          set_type(wtype);
+          return this;
+        }
       }
-      const TypeInt* wtype = TypeInt::make(MAX2(in_type->_lo, lo1),
-                                           MIN2(in_type->_hi, hi1),
-                                           MAX2((int)in_type->_widen, w1));
-      if (wtype != type()) {
-        set_type(wtype);
-        return this;
-      }
+    } else {
+      phase->C->record_for_post_loop_opts_igvn(this);
     }
   }
   return NULL;
+}
+
+Node* CastIINode::Identity(PhaseGVN* phase) {
+  Node* progress = ConstraintCastNode::Identity(phase);
+  if (progress != this) {
+    return progress;
+  }
+  if (_range_check_dependency) {
+    if (phase->C->post_loop_opts_phase()) {
+      return this->in(1);
+    } else {
+      phase->C->record_for_post_loop_opts_igvn(this);
+    }
+  }
+  return this;
 }
 
 bool CastIINode::cmp(const Node &n) const {
@@ -292,45 +355,6 @@ void CastIINode::dump_spec(outputStream* st) const {
 }
 #endif
 
-Node* CastLLNode::Ideal(PhaseGVN* phase, bool can_reshape) {
-  Node* progress = ConstraintCastNode::Ideal(phase, can_reshape);
-  if (progress != NULL) {
-    return progress;
-  }
-
-  // Same as in CastIINode::Ideal but for TypeLong instead of TypeInt
-  if (can_reshape && !phase->C->major_progress()) {
-    const TypeLong* this_type = this->type()->is_long();
-    const TypeLong* in_type = phase->type(in(1))->isa_long();
-    if (in_type != NULL && this_type != NULL &&
-        (in_type->_lo != this_type->_lo ||
-         in_type->_hi != this_type->_hi)) {
-      jlong lo1 = this_type->_lo;
-      jlong hi1 = this_type->_hi;
-      int w1  = this_type->_widen;
-
-      if (lo1 >= 0) {
-        // Keep a range assertion of >=0.
-        lo1 = 0;         hi1 = max_jlong;
-      } else if (hi1 < 0) {
-        // Keep a range assertion of <0.
-        lo1 = min_jlong; hi1 = -1;
-      } else {
-        lo1 = min_jlong; hi1 = max_jlong;
-      }
-      const TypeLong* wtype = TypeLong::make(MAX2(in_type->_lo, lo1),
-                                             MIN2(in_type->_hi, hi1),
-                                             MAX2((int)in_type->_widen, w1));
-      if (wtype != type()) {
-        set_type(wtype);
-        return this;
-      }
-    }
-  }
-  return NULL;
-}
-
-
 //=============================================================================
 //------------------------------Identity---------------------------------------
 // If input is already higher or equal to cast type, then this is an identity.
@@ -342,9 +366,17 @@ Node* CheckCastPPNode::Identity(PhaseGVN* phase) {
   if (_carry_dependency) {
     return this;
   }
-  // Toned down to rescue meeting at a Phi 3 different oops all implementing
-  // the same interface.
-  return (phase->type(in(1)) == phase->type(this)) ? in(1) : this;
+  const Type* t = phase->type(in(1));
+  if (EnableVectorReboxing && in(1)->Opcode() == Op_VectorBox) {
+    if (t->higher_equal_speculative(phase->type(this))) {
+      return in(1);
+    }
+  } else if (t == phase->type(this)) {
+    // Toned down to rescue meeting at a Phi 3 different oops all implementing
+    // the same interface.
+    return in(1);
+  }
+  return this;
 }
 
 //------------------------------Value------------------------------------------

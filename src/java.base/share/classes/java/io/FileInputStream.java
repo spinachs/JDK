@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 1994, 2019, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 1994, 2020, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -52,7 +52,6 @@ import sun.nio.ch.FileChannelImpl;
  * called when the FileInputStream is unreachable.
  * Otherwise, it is implementation specific how the resource cleanup described in
  * {@link #close} is performed.
-
  *
  * @author  Arthur van Hoff
  * @see     java.io.File
@@ -343,7 +342,6 @@ public class FileInputStream extends InputStream
      * @throws     IOException  if an I/O error occurs.
      *
      * @revised 1.4
-     * @spec JSR-51
      */
     public void close() throws IOException {
         if (closed) {
@@ -401,7 +399,6 @@ public class FileInputStream extends InputStream
      * @return  the file channel associated with this file input stream
      *
      * @since 1.4
-     * @spec JSR-51
      */
     public FileChannel getChannel() {
         FileChannel fc = this.channel;

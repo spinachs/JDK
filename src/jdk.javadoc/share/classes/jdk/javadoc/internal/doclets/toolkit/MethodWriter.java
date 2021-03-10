@@ -26,7 +26,6 @@
 package jdk.javadoc.internal.doclets.toolkit;
 
 import javax.lang.model.element.ExecutableElement;
-import javax.lang.model.element.TypeElement;
 import javax.lang.model.type.TypeMirror;
 
 /**
@@ -38,25 +37,23 @@ import javax.lang.model.type.TypeMirror;
  *  deletion without notice.</b>
  */
 
-public interface MethodWriter {
+public interface MethodWriter extends MemberWriter {
 
     /**
      * Get the method details tree header.
      *
-     * @param typeElement the class being documented
      * @param memberDetailsTree the content tree representing member details
      * @return content tree for the method details header
      */
-    Content getMethodDetailsTreeHeader(TypeElement typeElement, Content memberDetailsTree);
+    Content getMethodDetailsTreeHeader(Content memberDetailsTree);
 
     /**
      * Get the method documentation tree header.
      *
      * @param method the method being documented
-     * @param methodDetailsTree the content tree representing method details
      * @return content tree for the method documentation header
      */
-    Content getMethodDocTreeHeader(ExecutableElement method, Content methodDetailsTree);
+    Content getMethodDocTreeHeader(ExecutableElement method);
 
     /**
      * Get the signature for the given method.
@@ -73,6 +70,14 @@ public interface MethodWriter {
      * @param methodDocTree content tree to which the deprecated information will be added
      */
     void addDeprecated(ExecutableElement method, Content methodDocTree);
+
+    /**
+     * Adds the preview output for the given member.
+     *
+     * @param member the member being documented
+     * @param annotationDocTree content tree to which the preview information will be added
+     */
+    void addPreview(ExecutableElement member, Content contentTree);
 
     /**
      * Add the comments for the given method.
@@ -99,14 +104,6 @@ public interface MethodWriter {
      * @return content tree for the method details
      */
     Content getMethodDetails(Content methodDetailsTreeHeader, Content methodDetailsTree);
-
-    /**
-     * Get the method documentation.
-     *
-     * @param methodDocTree the content tree representing method documentation
-     * @return content tree for the method documentation
-     */
-    Content getMethodDoc(Content methodDocTree);
 
     /**
      * Gets the member header tree.

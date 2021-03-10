@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 1997, 2018, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 1997, 2021, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -97,7 +97,7 @@ import javax.swing.plaf.basic.DragRecognitionSupport.BeforeDrag;
  * future Swing releases. The current serialization support is
  * appropriate for short term storage or RMI between applications running
  * the same version of Swing.  As of 1.4, support for long term storage
- * of all JavaBeans&trade;
+ * of all JavaBeans
  * has been added to the <code>java.beans</code> package.
  * Please see {@link java.beans.XMLEncoder}.
  *
@@ -1371,12 +1371,22 @@ public abstract class BasicTextUI extends TextUI implements ViewFactory {
     /**
      * Default implementation of the interface {@code Caret}.
      */
-    public static class BasicCaret extends DefaultCaret implements UIResource {}
+    public static class BasicCaret extends DefaultCaret implements UIResource {
+        /**
+         * Constructs a {@code BasicCaret}.
+         */
+        public BasicCaret() {}
+    }
 
     /**
      * Default implementation of the interface {@code Highlighter}.
      */
-    public static class BasicHighlighter extends DefaultHighlighter implements UIResource {}
+    public static class BasicHighlighter extends DefaultHighlighter implements UIResource {
+        /**
+         * Constructs a {@code BasicHighlighter}.
+         */
+        public BasicHighlighter() {}
+    }
 
     static class BasicCursor extends Cursor implements UIResource {
         BasicCursor(int type) {
@@ -1898,6 +1908,14 @@ public abstract class BasicTextUI extends TextUI implements ViewFactory {
             } else if ("componentOrientation" == propertyName) {
                 // Changes in ComponentOrientation require the views to be
                 // rebuilt.
+                Document document = editor.getDocument();
+                final String I18NProperty = "i18n";
+                // if a default direction of right-to-left has been specified,
+                // we want complex layout even if the text is all left to right.
+                if (ComponentOrientation.RIGHT_TO_LEFT == newValue
+                    && ! Boolean.TRUE.equals(document.getProperty(I18NProperty))) {
+                    document.putProperty(I18NProperty, Boolean.TRUE);
+                }
                 modelChanged();
             } else if ("font" == propertyName) {
                 modelChanged();

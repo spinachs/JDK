@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2005, 2019, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2005, 2020, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -1341,8 +1341,9 @@ public class JavacProcessingEnvironment implements ProcessingEnvironment, Closea
             if (foundError) {
                 for (ClassSymbol cs : symtab.getAllClasses()) {
                     if (cs.classfile != null || cs.kind == ERR) {
+                        Kinds.Kind symKind = cs.kind;
                         cs.reset();
-                        if (cs.kind == ERR) {
+                        if (symKind == ERR) {
                             cs.type = new ClassType(cs.type.getEnclosingType(), null, cs);
                         }
                         if (cs.isCompleted()) {
@@ -1429,21 +1430,25 @@ public class JavacProcessingEnvironment implements ProcessingEnvironment, Closea
 
         errorStatus = errorStatus || (compiler.errorCount() > 0);
 
-        round.finalCompiler();
 
         if (newSourceFiles.size() > 0)
             roots = roots.appendList(compiler.parseFiles(newSourceFiles));
 
         errorStatus = errorStatus || (compiler.errorCount() > 0);
 
-        // Free resources
-        this.close();
-
         if (errorStatus && compiler.errorCount() == 0) {
             compiler.log.nerrors++;
         }
 
-        compiler.enterTreesIfNeeded(roots);
+        if (compiler.continueAfterProcessAnnotations()) {
+            round.finalCompiler();
+            compiler.enterTrees(compiler.initModules(roots));
+        } else {
+            compiler.todo.clear();
+        }
+
+        // Free resources
+        this.close();
 
         if (!taskListener.isEmpty())
             taskListener.finished(new TaskEvent(TaskEvent.Kind.ANNOTATION_PROCESSING));
@@ -1636,6 +1641,13 @@ public class JavacProcessingEnvironment implements ProcessingEnvironment, Closea
                 }
                 if (node.sym != null) {
                     node.sym.completer = new ImplicitCompleter(topLevel);
+                    List<? extends RecordComponent> recordComponents = node.sym.getRecordComponents();
+                    for (RecordComponent rc : recordComponents) {
+                        List<JCAnnotation> originalAnnos = rc.getOriginalAnnos();
+                        originalAnnos.stream().forEach(a -> visitAnnotation(a));
+                    }
+                    // we should empty the list of permitted subclasses for next round
+                    node.sym.permitted = List.nil();
                 }
                 node.sym = null;
             }
@@ -1758,7 +1770,7 @@ public class JavacProcessingEnvironment implements ProcessingEnvironment, Closea
             pkg = s;
         } else {
             String moduleName = s.substring(0, slash);
-            if (!SourceVersion.isIdentifier(moduleName)) {
+            if (!SourceVersion.isName(moduleName)) {
                 return warnAndNoMatches(s, p, log, lint);
             }
             module = Pattern.quote(moduleName + "/");

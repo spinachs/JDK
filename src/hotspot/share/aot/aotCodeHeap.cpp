@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2016, 2019, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2016, 2021, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -22,14 +22,18 @@
  */
 
 #include "precompiled.hpp"
-
+#include "jvm_io.h"
 #include "aot/aotCodeHeap.hpp"
 #include "aot/aotLoader.hpp"
 #include "ci/ciUtilities.inline.hpp"
 #include "classfile/javaAssertions.hpp"
+#include "classfile/systemDictionary.hpp"
+#include "classfile/vmClasses.hpp"
+#include "classfile/vmSymbols.hpp"
 #include "gc/shared/cardTable.hpp"
 #include "gc/shared/cardTableBarrierSet.hpp"
 #include "gc/shared/gcConfig.hpp"
+#include "gc/shared/tlab_globals.hpp"
 #include "gc/g1/heapRegion.hpp"
 #include "interpreter/abstractInterpreter.hpp"
 #include "jvmci/compilerRuntime.hpp"
@@ -44,9 +48,12 @@
 #include "runtime/deoptimization.hpp"
 #include "runtime/handles.inline.hpp"
 #include "runtime/os.hpp"
+#include "runtime/java.hpp"
 #include "runtime/safepointVerifiers.hpp"
 #include "runtime/sharedRuntime.hpp"
+#include "runtime/stubRoutines.hpp"
 #include "runtime/vmOperations.hpp"
+#include "utilities/powerOfTwo.hpp"
 #include "utilities/sizes.hpp"
 
 bool AOTLib::_narrow_oop_shift_initialized = false;
@@ -105,8 +112,7 @@ Klass* AOTCodeHeap::lookup_klass(const char* name, int len, const Method* method
     log_debug(aot, class, resolve)("Probe failed for AOT class %s", name);
     return NULL;
   }
-  Klass* k = SystemDictionary::find_instance_or_array_klass(sym, loader, protection_domain, thread);
-  assert(!thread->has_pending_exception(), "should not throw");
+  Klass* k = SystemDictionary::find_instance_or_array_klass(sym, loader, protection_domain);
 
   if (k != NULL) {
     log_info(aot, class, resolve)("%s %s (lookup)", caller->method_holder()->external_name(), k->external_name());
@@ -181,14 +187,8 @@ void AOTLib::verify_config() {
   verify_flag(_config->_useBiasedLocking, UseBiasedLocking, "UseBiasedLocking");
   verify_flag(_config->_objectAlignment, ObjectAlignmentInBytes, "ObjectAlignmentInBytes");
   verify_flag(_config->_contendedPaddingWidth, ContendedPaddingWidth, "ContendedPaddingWidth");
-  verify_flag(_config->_fieldsAllocationStyle, FieldsAllocationStyle, "FieldsAllocationStyle");
-  verify_flag(_config->_compactFields, CompactFields, "CompactFields");
   verify_flag(_config->_enableContended, EnableContended, "EnableContended");
   verify_flag(_config->_restrictContended, RestrictContended, "RestrictContended");
-
-  if (!TieredCompilation && _config->_tieredAOT) {
-    handle_config_error("Shared file %s error: Expected to run with tiered compilation on", _name);
-  }
 
   // Shifts are static values which initialized by 0 until java heap initialization.
   // AOT libs are loaded before heap initialized so shift values are not set.
@@ -351,7 +351,7 @@ void AOTCodeHeap::publish_aot(const methodHandle& mh, AOTMethodData* method_data
     _code_to_aot[code_id]._aot = NULL; // Clean
   } else { // success
     // Publish method
-#ifdef TIERED
+#if COMPILER1_OR_COMPILER2
     mh->set_aot_code(aot);
 #endif
     {
@@ -367,24 +367,30 @@ void AOTCodeHeap::publish_aot(const methodHandle& mh, AOTMethodData* method_data
   }
 }
 
-void AOTCodeHeap::link_primitive_array_klasses() {
+void AOTCodeHeap::link_klass(const Klass* klass) {
   ResourceMark rm;
+  assert(klass != NULL, "Should be given a klass");
+  AOTKlassData* klass_data = (AOTKlassData*) os::dll_lookup(_lib->dl_handle(), klass->signature_name());
+  if (klass_data != NULL) {
+    // Set both GOT cells, resolved and initialized klass pointers.
+    // _got_index points to second cell - resolved klass pointer.
+    _klasses_got[klass_data->_got_index-1] = (Metadata*)klass; // Initialized
+    _klasses_got[klass_data->_got_index  ] = (Metadata*)klass; // Resolved
+    if (PrintAOT) {
+      tty->print_cr("[Found  %s  in  %s]", klass->internal_name(), _lib->name());
+    }
+  }
+}
+
+void AOTCodeHeap::link_known_klasses() {
   for (int i = T_BOOLEAN; i <= T_CONFLICT; i++) {
     BasicType t = (BasicType)i;
     if (is_java_primitive(t)) {
       const Klass* arr_klass = Universe::typeArrayKlassObj(t);
-      AOTKlassData* klass_data = (AOTKlassData*) os::dll_lookup(_lib->dl_handle(), arr_klass->signature_name());
-      if (klass_data != NULL) {
-        // Set both GOT cells, resolved and initialized klass pointers.
-        // _got_index points to second cell - resolved klass pointer.
-        _klasses_got[klass_data->_got_index-1] = (Metadata*)arr_klass; // Initialized
-        _klasses_got[klass_data->_got_index  ] = (Metadata*)arr_klass; // Resolved
-        if (PrintAOT) {
-          tty->print_cr("[Found  %s  in  %s]", arr_klass->internal_name(), _lib->name());
-        }
-      }
+      link_klass(arr_klass);
     }
   }
+  link_klass(vmClasses::Reference_klass());
 }
 
 void AOTCodeHeap::register_stubs() {
@@ -465,6 +471,7 @@ void AOTCodeHeap::link_shared_runtime_symbols() {
     SET_AOT_GLOBAL_SYMBOL_VALUE("_resolve_virtual_entry", address, SharedRuntime::get_resolve_virtual_call_stub());
     SET_AOT_GLOBAL_SYMBOL_VALUE("_resolve_opt_virtual_entry", address, SharedRuntime::get_resolve_opt_virtual_call_stub());
     SET_AOT_GLOBAL_SYMBOL_VALUE("_aot_deopt_blob_unpack", address, SharedRuntime::deopt_blob()->unpack());
+    SET_AOT_GLOBAL_SYMBOL_VALUE("_aot_deopt_blob_unpack_with_exception_in_tls", address, SharedRuntime::deopt_blob()->unpack_with_exception_in_tls());
     SET_AOT_GLOBAL_SYMBOL_VALUE("_aot_deopt_blob_uncommon_trap", address, SharedRuntime::deopt_blob()->uncommon_trap());
     SET_AOT_GLOBAL_SYMBOL_VALUE("_aot_ic_miss_stub", address, SharedRuntime::get_ic_miss_stub());
     SET_AOT_GLOBAL_SYMBOL_VALUE("_aot_handle_wrong_method_stub", address, SharedRuntime::get_handle_wrong_method_stub());
@@ -560,6 +567,10 @@ void AOTCodeHeap::link_stub_routines_symbols() {
 
     SET_AOT_GLOBAL_SYMBOL_VALUE("_aot_stub_routines_throw_delayed_StackOverflowError_entry", address, StubRoutines::_throw_delayed_StackOverflowError_entry);
 
+    SET_AOT_GLOBAL_SYMBOL_VALUE("_aot_verify_oops", intptr_t, VerifyOops);
+    SET_AOT_GLOBAL_SYMBOL_VALUE("_aot_verify_oop_count_address", jint *, &StubRoutines::_verify_oop_count);
+    SET_AOT_GLOBAL_SYMBOL_VALUE("_aot_verify_oop_bits", intptr_t, Universe::verify_oop_bits());
+    SET_AOT_GLOBAL_SYMBOL_VALUE("_aot_verify_oop_mask", intptr_t, Universe::verify_oop_mask());
 }
 
 void AOTCodeHeap::link_os_symbols() {
@@ -580,7 +591,6 @@ void AOTCodeHeap::link_global_lib_symbols() {
     SET_AOT_GLOBAL_SYMBOL_VALUE("_aot_card_table_address", address, (BarrierSet::barrier_set()->is_a(BarrierSet::CardTableBarrierSet) ? ci_card_table_address() : NULL));
     SET_AOT_GLOBAL_SYMBOL_VALUE("_aot_heap_top_address", address, (heap->supports_inline_contig_alloc() ? heap->top_addr() : NULL));
     SET_AOT_GLOBAL_SYMBOL_VALUE("_aot_heap_end_address", address, (heap->supports_inline_contig_alloc() ? heap->end_addr() : NULL));
-    SET_AOT_GLOBAL_SYMBOL_VALUE("_aot_polling_page", address, os::get_polling_page());
     SET_AOT_GLOBAL_SYMBOL_VALUE("_aot_narrow_klass_base_address", address, CompressedKlassPointers::base());
     SET_AOT_GLOBAL_SYMBOL_VALUE("_aot_narrow_oop_base_address", address, CompressedOops::base());
 #if INCLUDE_G1GC
@@ -591,9 +601,7 @@ void AOTCodeHeap::link_global_lib_symbols() {
     link_stub_routines_symbols();
     link_os_symbols();
     link_graal_runtime_symbols();
-
-    // Link primitive array klasses.
-    link_primitive_array_klasses();
+    link_known_klasses();
   }
 }
 
@@ -759,7 +767,7 @@ void AOTCodeHeap::sweep_dependent_methods(InstanceKlass* ik) {
 void AOTCodeHeap::sweep_method(AOTCompiledMethod *aot) {
   int indexes[] = {aot->method_index()};
   sweep_dependent_methods(indexes, 1);
-  vmassert(aot->method()->code() != aot TIERED_ONLY( && aot->method()->aot_code() == NULL), "method still active");
+  vmassert(aot->method()->code() != aot COMPILER1_OR_COMPILER2_PRESENT( && aot->method()->aot_code() == NULL), "method still active");
 }
 
 
@@ -1050,7 +1058,7 @@ bool AOTCodeHeap::reconcile_dynamic_klass(AOTCompiledMethod *caller, InstanceKla
 
   InstanceKlass* dyno = InstanceKlass::cast(dyno_klass);
 
-  if (!dyno->is_unsafe_anonymous()) {
+  if (!dyno->is_hidden() && !dyno->is_unsafe_anonymous()) {
     if (_klasses_got[dyno_data->_got_index] != dyno) {
       // compile-time class different from runtime class, fail and deoptimize
       sweep_dependent_methods(holder_data);

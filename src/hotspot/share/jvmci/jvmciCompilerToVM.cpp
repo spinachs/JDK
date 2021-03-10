@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2011, 2019, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2011, 2021, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -26,11 +26,15 @@
 #include "classfile/javaClasses.inline.hpp"
 #include "classfile/stringTable.hpp"
 #include "classfile/symbolTable.hpp"
+#include "classfile/systemDictionary.hpp"
+#include "classfile/vmClasses.hpp"
 #include "code/scopeDesc.hpp"
 #include "compiler/compileBroker.hpp"
+#include "compiler/compilerEvent.hpp"
 #include "compiler/disassembler.hpp"
 #include "interpreter/linkResolver.hpp"
 #include "interpreter/bytecodeStream.hpp"
+#include "jfr/jfrEvents.hpp"
 #include "jvmci/jvmciCompilerToVM.hpp"
 #include "jvmci/jvmciCodeInstaller.hpp"
 #include "jvmci/jvmciRuntime.hpp"
@@ -39,15 +43,20 @@
 #include "memory/oopFactory.hpp"
 #include "memory/universe.hpp"
 #include "oops/constantPool.inline.hpp"
+#include "oops/instanceKlass.inline.hpp"
 #include "oops/method.inline.hpp"
 #include "oops/typeArrayOop.inline.hpp"
+#include "prims/jvmtiExport.hpp"
+#include "prims/methodHandles.hpp"
 #include "prims/nativeLookup.hpp"
 #include "runtime/atomic.hpp"
 #include "runtime/deoptimization.hpp"
 #include "runtime/fieldDescriptor.inline.hpp"
 #include "runtime/frame.inline.hpp"
+#include "runtime/globals_extension.hpp"
 #include "runtime/interfaceSupport.inline.hpp"
 #include "runtime/jniHandles.inline.hpp"
+#include "runtime/reflectionUtils.hpp"
 #include "runtime/timerTrace.hpp"
 #include "runtime/vframe_hp.hpp"
 
@@ -101,14 +110,10 @@ class JVMCITraceMark : public StackObj {
  public:
   JVMCITraceMark(const char* msg) {
     _msg = msg;
-    if (JVMCITraceLevel >= 1) {
-      tty->print_cr(PTR_FORMAT " JVMCITrace-1: Enter %s", p2i(JavaThread::current()), _msg);
-    }
+    JVMCI_event_2("Enter %s", _msg);
   }
   ~JVMCITraceMark() {
-    if (JVMCITraceLevel >= 1) {
-      tty->print_cr(PTR_FORMAT " JVMCITrace-1: Exit %s", p2i(JavaThread::current()), _msg);
-    }
+    JVMCI_event_2(" Exit %s", _msg);
   }
 };
 
@@ -123,47 +128,46 @@ Handle JavaArgumentUnboxer::next_arg(BasicType expectedType) {
 // Bring the JVMCI compiler thread into the VM state.
 #define JVMCI_VM_ENTRY_MARK                   \
   ThreadInVMfromNative __tiv(thread);         \
-  ResetNoHandleMark rnhm;                     \
   HandleMarkCleaner __hm(thread);             \
   Thread* THREAD = thread;                    \
   debug_only(VMNativeEntryWrapper __vew;)
 
 // Native method block that transitions current thread to '_thread_in_vm'.
 #define C2V_BLOCK(result_type, name, signature)      \
-  TRACE_CALL(result_type, jvmci_ ## name signature)  \
   JVMCI_VM_ENTRY_MARK;                               \
   ResourceMark rm;                                   \
-  JNI_JVMCIENV(thread, env);
+  JNI_JVMCIENV(JVMCI::compilation_tick(thread), env);
 
-static Thread* get_current_thread() {
-  return Thread::current_or_null_safe();
+static JavaThread* get_current_thread(bool allow_null=true) {
+  Thread* thread = Thread::current_or_null_safe();
+  if (thread == NULL) {
+    assert(allow_null, "npe");
+    return NULL;
+  }
+  return thread->as_Java_thread();
 }
 
 // Entry to native method implementation that transitions
 // current thread to '_thread_in_vm'.
 #define C2V_VMENTRY(result_type, name, signature)        \
   JNIEXPORT result_type JNICALL c2v_ ## name signature { \
-  Thread* base_thread = get_current_thread();            \
-  if (base_thread == NULL) {                             \
+  JavaThread* thread = get_current_thread();             \
+  if (thread == NULL) {                                  \
     env->ThrowNew(JNIJVMCI::InternalError::clazz(),      \
         err_msg("Cannot call into HotSpot from JVMCI shared library without attaching current thread")); \
     return;                                              \
   }                                                      \
-  assert(base_thread->is_Java_thread(), "just checking");\
-  JavaThread* thread = (JavaThread*) base_thread;        \
   JVMCITraceMark jtm("CompilerToVM::" #name);            \
   C2V_BLOCK(result_type, name, signature)
 
 #define C2V_VMENTRY_(result_type, name, signature, result) \
   JNIEXPORT result_type JNICALL c2v_ ## name signature { \
-  Thread* base_thread = get_current_thread();            \
-  if (base_thread == NULL) {                             \
+  JavaThread* thread = get_current_thread();             \
+  if (thread == NULL) {                                  \
     env->ThrowNew(JNIJVMCI::InternalError::clazz(),      \
         err_msg("Cannot call into HotSpot from JVMCI shared library without attaching current thread")); \
     return result;                                       \
   }                                                      \
-  assert(base_thread->is_Java_thread(), "just checking");\
-  JavaThread* thread = (JavaThread*) base_thread;        \
   JVMCITraceMark jtm("CompilerToVM::" #name);            \
   C2V_BLOCK(result_type, name, signature)
 
@@ -174,7 +178,7 @@ static Thread* get_current_thread() {
 // current thread to '_thread_in_vm'.
 #define C2V_VMENTRY_PREFIX(result_type, name, signature) \
   JNIEXPORT result_type JNICALL c2v_ ## name signature { \
-  Thread* base_thread = get_current_thread();
+  JavaThread* thread = get_current_thread();
 
 #define C2V_END }
 
@@ -236,7 +240,7 @@ C2V_VMENTRY_NULL(jobject, getFlagValue, (JNIEnv* env, jobject c2vm, jobject name
   } else if (flag->is_double()) {
     RETURN_BOXED_DOUBLE(flag->get_double());
   } else {
-    JVMCI_ERROR_NULL("VM flag %s has unsupported type %s", flag->_name, flag->_type);
+    JVMCI_ERROR_NULL("VM flag %s has unsupported type %s", flag->name(), flag->type_string());
   }
 #undef RETURN_BOXED_LONG
 #undef RETURN_BOXED_DOUBLE
@@ -251,7 +255,7 @@ C2V_VMENTRY_NULL(jobject, getObjectAtAddress, (JNIEnv* env, jobject c2vm, jlong 
   if (obj != NULL) {
     oopDesc::verify(obj);
   }
-  return JNIHandles::make_local(obj);
+  return JNIHandles::make_local(THREAD, obj);
 C2V_END
 
 C2V_VMENTRY_NULL(jbyteArray, getBytecode, (JNIEnv* env, jobject, jobject jvmci_method))
@@ -351,11 +355,11 @@ C2V_VMENTRY_NULL(jobject, asResolvedJavaMethod, (JNIEnv* env, jobject, jobject e
   oop mirror = NULL;
   int slot = 0;
 
-  if (executable->klass() == SystemDictionary::reflect_Constructor_klass()) {
+  if (executable->klass() == vmClasses::reflect_Constructor_klass()) {
     mirror = java_lang_reflect_Constructor::clazz(executable);
     slot = java_lang_reflect_Constructor::slot(executable);
   } else {
-    assert(executable->klass() == SystemDictionary::reflect_Method_klass(), "wrong type");
+    assert(executable->klass() == vmClasses::reflect_Method_klass(), "wrong type");
     mirror = java_lang_reflect_Method::clazz(executable);
     slot = java_lang_reflect_Method::slot(executable);
   }
@@ -372,7 +376,7 @@ C2V_VMENTRY_NULL(jobject, getResolvedJavaMethod, (JNIEnv* env, jobject, jobject 
     method = *((Method**)(offset));
   } else if (JVMCIENV->isa_HotSpotObjectConstantImpl(base_object)) {
     Handle obj = JVMCIENV->asConstant(base_object, JVMCI_CHECK_NULL);
-    if (obj->is_a(SystemDictionary::ResolvedMethodName_klass())) {
+    if (obj->is_a(vmClasses::ResolvedMethodName_klass())) {
       method = (Method*) (intptr_t) obj->long_field(offset);
     } else {
       JVMCI_THROW_MSG_NULL(IllegalArgumentException, err_msg("Unexpected type: %s", obj->klass()->external_name()));
@@ -430,8 +434,8 @@ C2V_VMENTRY_NULL(jobject, getResolvedJavaType0, (JNIEnv* env, jobject, jobject b
         base_address = (intptr_t) JVMCIENV->asKlass(base_object);
       } else if (JVMCIENV->isa_HotSpotObjectConstantImpl(base_object)) {
         Handle base_oop = JVMCIENV->asConstant(base_object, JVMCI_CHECK_NULL);
-        if (base_oop->is_a(SystemDictionary::Class_klass())) {
-          base_address = (jlong) (address) base_oop();
+        if (base_oop->is_a(vmClasses::Class_klass())) {
+          base_address = cast_from_oop<jlong>(base_oop());
         }
       }
       if (base_address == 0) {
@@ -534,38 +538,36 @@ C2V_VMENTRY_NULL(jobject, lookupType, (JNIEnv* env, jobject, jstring jname, jcla
   }
 
   if (resolve) {
-    resolved_klass = SystemDictionary::resolve_or_null(class_name, class_loader, protection_domain, CHECK_0);
+    resolved_klass = SystemDictionary::resolve_or_null(class_name, class_loader, protection_domain, CHECK_NULL);
     if (resolved_klass == NULL) {
       JVMCI_THROW_MSG_NULL(ClassNotFoundException, str);
     }
   } else {
-    if (class_name->char_at(0) == JVM_SIGNATURE_CLASS &&
-        class_name->char_at(class_name->utf8_length()-1) == JVM_SIGNATURE_ENDCLASS) {
+    if (Signature::has_envelope(class_name)) {
       // This is a name from a signature.  Strip off the trimmings.
       // Call recursive to keep scope of strippedsym.
-      TempNewSymbol strippedsym = SymbolTable::new_symbol(class_name->as_utf8()+1,
-                                                          class_name->utf8_length()-2);
-      resolved_klass = SystemDictionary::find(strippedsym, class_loader, protection_domain, CHECK_0);
-    } else if (FieldType::is_array(class_name)) {
-      FieldArrayInfo fd;
-      // dimension and object_key in FieldArrayInfo are assigned as a side-effect
-      // of this call
-      BasicType t = FieldType::get_array_info(class_name, fd, CHECK_0);
-      if (t == T_OBJECT) {
-        TempNewSymbol strippedsym = SymbolTable::new_symbol(class_name->as_utf8()+1+fd.dimension(),
-                                                            class_name->utf8_length()-2-fd.dimension());
-        resolved_klass = SystemDictionary::find(strippedsym,
+      TempNewSymbol strippedsym = Signature::strip_envelope(class_name);
+      resolved_klass = SystemDictionary::find_instance_klass(strippedsym,
                                                              class_loader,
-                                                             protection_domain,
-                                                             CHECK_0);
+                                                             protection_domain);
+    } else if (Signature::is_array(class_name)) {
+      SignatureStream ss(class_name, false);
+      int ndim = ss.skip_array_prefix();
+      if (ss.type() == T_OBJECT) {
+        Symbol* strippedsym = ss.as_symbol();
+        resolved_klass = SystemDictionary::find_instance_klass(strippedsym,
+                                                               class_loader,
+                                                               protection_domain);
         if (!resolved_klass.is_null()) {
-          resolved_klass = resolved_klass->array_klass(fd.dimension(), CHECK_0);
+          resolved_klass = resolved_klass->array_klass(ndim, CHECK_NULL);
         }
       } else {
-        resolved_klass = TypeArrayKlass::cast(Universe::typeArrayKlassObj(t))->array_klass(fd.dimension(), CHECK_0);
+        resolved_klass = TypeArrayKlass::cast(Universe::typeArrayKlassObj(ss.type()))->array_klass(ndim, CHECK_NULL);
       }
     } else {
-      resolved_klass = SystemDictionary::find(class_name, class_loader, protection_domain, CHECK_0);
+      resolved_klass = SystemDictionary::find_instance_klass(class_name,
+                                                             class_loader,
+                                                             protection_domain);
     }
   }
   JVMCIObject result = JVMCIENV->get_jvmci_type(resolved_klass, JVMCI_CHECK_NULL);
@@ -709,8 +711,8 @@ C2V_VMENTRY_NULL(jobject, resolveFieldInPool, (JNIEnv* env, jobject, jobject jvm
   Bytecodes::Code code = (Bytecodes::Code)(((int) opcode) & 0xFF);
   fieldDescriptor fd;
   methodHandle mh(THREAD, (jvmci_method != NULL) ? JVMCIENV->asMethod(jvmci_method) : NULL);
-  LinkInfo link_info(cp, index, mh, CHECK_0);
-  LinkResolver::resolve_field(fd, link_info, Bytecodes::java_code(code), false, CHECK_0);
+  LinkInfo link_info(cp, index, mh, CHECK_NULL);
+  LinkResolver::resolve_field(fd, link_info, Bytecodes::java_code(code), false, CHECK_NULL);
   JVMCIPrimitiveArray info = JVMCIENV->wrap(info_handle);
   if (info.is_null() || JVMCIENV->get_length(info) != 3) {
     JVMCI_ERROR_NULL("info must not be null and have a length of 3");
@@ -756,7 +758,7 @@ C2V_VMENTRY_NULL(jobject, resolveMethod, (JNIEnv* env, jobject, jobject receiver
   }
 
   if (method->name() == vmSymbols::clone_name() &&
-      resolved == SystemDictionary::Object_klass() &&
+      resolved == vmClasses::Object_klass() &&
       recv_klass->is_array_klass()) {
     // Resolution of the clone method on arrays always returns Object.clone even though that method
     // has protected access.  There's some trickery in the access checking to make this all work out
@@ -824,7 +826,7 @@ C2V_END
 
 C2V_VMENTRY_0(jint, installCode, (JNIEnv *env, jobject, jobject target, jobject compiled_code,
             jobject installed_code, jlong failed_speculations_address, jbyteArray speculations_obj))
-  HandleMark hm;
+  HandleMark hm(THREAD);
   JNIHandleMark jni_hm(thread);
 
   JVMCIObject target_handle = JVMCIENV->wrap(target);
@@ -839,7 +841,7 @@ C2V_VMENTRY_0(jint, installCode, (JNIEnv *env, jobject, jobject target, jobject 
 
   JVMCICompiler* compiler = JVMCICompiler::instance(true, CHECK_JNI_ERR);
 
-  TraceTime install_time("installCode", JVMCICompiler::codeInstallTimer());
+  TraceTime install_time("installCode", JVMCICompiler::codeInstallTimer(!thread->is_Compiler_thread()));
   bool is_immutable_PIC = JVMCIENV->get_HotSpotCompiledCode_isImmutablePIC(compiled_code_handle) > 0;
 
   CodeInstaller installer(JVMCIENV, is_immutable_PIC);
@@ -885,7 +887,7 @@ C2V_END
 
 C2V_VMENTRY_0(jint, getMetadata, (JNIEnv *env, jobject, jobject target, jobject compiled_code, jobject metadata))
 #if INCLUDE_AOT
-  HandleMark hm;
+  HandleMark hm(THREAD);
   assert(JVMCIENV->is_hotspot(), "AOT code is executed only in HotSpot mode");
 
   JVMCIObject target_handle = JVMCIENV->wrap(target);
@@ -973,7 +975,7 @@ C2V_VMENTRY(void, resetCompilationStatistics, (JNIEnv* env, jobject))
 C2V_END
 
 C2V_VMENTRY_NULL(jobject, disassembleCodeBlob, (JNIEnv* env, jobject, jobject installedCode))
-  HandleMark hm;
+  HandleMark hm(THREAD);
 
   if (installedCode == NULL) {
     JVMCI_THROW_MSG_NULL(NullPointerException, "installedCode is null");
@@ -1011,7 +1013,7 @@ C2V_VMENTRY_NULL(jobject, disassembleCodeBlob, (JNIEnv* env, jobject, jobject in
 C2V_END
 
 C2V_VMENTRY_NULL(jobject, getStackTraceElement, (JNIEnv* env, jobject, jobject jvmci_method, int bci))
-  HandleMark hm;
+  HandleMark hm(THREAD);
 
   methodHandle method(THREAD, JVMCIENV->asMethod(jvmci_method));
   JVMCIObject element = JVMCIENV->new_StackTraceElement(method, bci, JVMCI_CHECK_NULL);
@@ -1023,12 +1025,12 @@ C2V_VMENTRY_NULL(jobject, executeHotSpotNmethod, (JNIEnv* env, jobject, jobject 
   // and the return value would have to be wrapped as a JavaConstant.
   requireInHotSpot("executeHotSpotNmethod", JVMCI_CHECK_NULL);
 
-  HandleMark hm;
+  HandleMark hm(THREAD);
 
   JVMCIObject nmethod_mirror = JVMCIENV->wrap(hs_nmethod);
   nmethodLocker locker;
   nmethod* nm = JVMCIENV->get_nmethod(nmethod_mirror, locker);
-  if (nm == NULL) {
+  if (nm == NULL || !nm->is_in_use()) {
     JVMCI_THROW_NULL(InvalidInstalledCodeException);
   }
   methodHandle mh(THREAD, nm->method());
@@ -1036,18 +1038,18 @@ C2V_VMENTRY_NULL(jobject, executeHotSpotNmethod, (JNIEnv* env, jobject, jobject 
   JavaCallArguments jca(mh->size_of_parameters());
 
   JavaArgumentUnboxer jap(signature, &jca, (arrayOop) JNIHandles::resolve(args), mh->is_static());
-  JavaValue result(jap.get_ret_type());
-  jca.set_alternative_target(nm);
+  JavaValue result(jap.return_type());
+  jca.set_alternative_target(Handle(THREAD, JNIHandles::resolve(nmethod_mirror.as_jobject())));
   JavaCalls::call(&result, mh, &jca, CHECK_NULL);
 
-  if (jap.get_ret_type() == T_VOID) {
+  if (jap.return_type() == T_VOID) {
     return NULL;
-  } else if (is_reference_type(jap.get_ret_type())) {
-    return JNIHandles::make_local((oop) result.get_jobject());
+  } else if (is_reference_type(jap.return_type())) {
+    return JNIHandles::make_local(THREAD, (oop) result.get_jobject());
   } else {
     jvalue *value = (jvalue *) result.get_value_addr();
     // Narrow the value down if required (Important on big endian machines)
-    switch (jap.get_ret_type()) {
+    switch (jap.return_type()) {
       case T_BOOLEAN:
        value->z = (jboolean) value->i;
        break;
@@ -1063,7 +1065,7 @@ C2V_VMENTRY_NULL(jobject, executeHotSpotNmethod, (JNIEnv* env, jobject, jobject 
       default:
         break;
     }
-    JVMCIObject o = JVMCIENV->create_box(jap.get_ret_type(), value, JVMCI_CHECK_NULL);
+    JVMCIObject o = JVMCIENV->create_box(jap.return_type(), value, JVMCI_CHECK_NULL);
     return JVMCIENV->get_jobject(o);
   }
 C2V_END
@@ -1157,12 +1159,12 @@ C2V_VMENTRY_0(jint, getCountersSize, (JNIEnv* env, jobject))
   return (jint) JVMCICounterSize;
 C2V_END
 
-C2V_VMENTRY(void, setCountersSize, (JNIEnv* env, jobject, jint new_size))
-  JavaThread::resize_all_jvmci_counters(new_size);
+C2V_VMENTRY_0(jboolean, setCountersSize, (JNIEnv* env, jobject, jint new_size))
+  return JavaThread::resize_all_jvmci_counters(new_size);
 C2V_END
 
 C2V_VMENTRY_0(jint, allocateCompileId, (JNIEnv* env, jobject, jobject jvmci_method, int entry_bci))
-  HandleMark hm;
+  HandleMark hm(THREAD);
   if (jvmci_method == NULL) {
     JVMCI_THROW_0(NullPointerException);
   }
@@ -1227,11 +1229,11 @@ C2V_VMENTRY_NULL(jobject, iterateFrames, (JNIEnv* env, jobject compilerToVM, job
   HotSpotJVMCI::HotSpotStackFrameReference::klass()->initialize(CHECK_NULL);
   Handle frame_reference = HotSpotJVMCI::HotSpotStackFrameReference::klass()->allocate_instance_handle(CHECK_NULL);
 
-  StackFrameStream fst(thread);
+  StackFrameStream fst(thread, true /* update */, true /* process_frames */);
   jobjectArray methods = initial_methods;
 
   int frame_number = 0;
-  vframe* vf = vframe::new_vframe(fst.current(), fst.register_map(), thread);
+  vframe* vf = vframe::new_vframe(fst, thread);
 
   while (true) {
     // look for the given method
@@ -1334,14 +1336,14 @@ C2V_VMENTRY_NULL(jobject, iterateFrames, (JNIEnv* env, jobject compilerToVM, job
         if (HotSpotJVMCI::HotSpotStackFrameReference::objectsMaterialized(JVMCIENV, frame_reference()) == JNI_TRUE) {
           // the frame has been deoptimized, we need to re-synchronize the frame and vframe
           intptr_t* stack_pointer = (intptr_t*) HotSpotJVMCI::HotSpotStackFrameReference::stackPointer(JVMCIENV, frame_reference());
-          fst = StackFrameStream(thread);
+          fst = StackFrameStream(thread, true /* update */, true /* process_frames */);
           while (fst.current()->sp() != stack_pointer && !fst.is_done()) {
             fst.next();
           }
           if (fst.current()->sp() != stack_pointer) {
             THROW_MSG_NULL(vmSymbols::java_lang_IllegalStateException(), "stack frame not found after deopt")
           }
-          vf = vframe::new_vframe(fst.current(), fst.register_map(), thread);
+          vf = vframe::new_vframe(fst, thread);
           if (!vf->is_compiled_frame()) {
             THROW_MSG_NULL(vmSymbols::java_lang_IllegalStateException(), "compiled stack frame expected")
           }
@@ -1368,7 +1370,7 @@ C2V_VMENTRY_NULL(jobject, iterateFrames, (JNIEnv* env, jobject compilerToVM, job
       break;
     }
     fst.next();
-    vf = vframe::new_vframe(fst.current(), fst.register_map(), thread);
+    vf = vframe::new_vframe(fst, thread);
     frame_number = 0;
   } // end of frame loop
 
@@ -1466,7 +1468,7 @@ C2V_VMENTRY(void, materializeVirtualObjects, (JNIEnv* env, jobject, jobject _hs_
   JVMCIENV->HotSpotStackFrameReference_initialize(JVMCI_CHECK);
 
   // look for the given stack frame
-  StackFrameStream fst(thread);
+  StackFrameStream fst(thread, false /* update */, true /* process_frames */);
   intptr_t* stack_pointer = (intptr_t*) JVMCIENV->get_HotSpotStackFrameReference_stackPointer(hs_frame);
   while (fst.current()->sp() != stack_pointer && !fst.is_done()) {
     fst.next();
@@ -1482,9 +1484,9 @@ C2V_VMENTRY(void, materializeVirtualObjects, (JNIEnv* env, jobject, jobject _hs_
     assert(fst.current()->cb()->is_nmethod(), "nmethod expected");
     ((nmethod*) fst.current()->cb())->make_not_entrant();
   }
-  Deoptimization::deoptimize(thread, *fst.current(), fst.register_map(), Deoptimization::Reason_none);
+  Deoptimization::deoptimize(thread, *fst.current(), Deoptimization::Reason_none);
   // look for the frame again as it has been updated by deopt (pc, deopt state...)
-  StackFrameStream fstAfterDeopt(thread);
+  StackFrameStream fstAfterDeopt(thread, true /* update */, true /* process_frames */);
   while (fstAfterDeopt.current()->sp() != stack_pointer && !fstAfterDeopt.is_done()) {
     fstAfterDeopt.next();
   }
@@ -1534,7 +1536,7 @@ C2V_VMENTRY(void, materializeVirtualObjects, (JNIEnv* env, jobject, jobject _hs_
         StackValue* var = locals->at(i2);
         if (var->type() == T_OBJECT && scopeLocals->at(i2)->is_object()) {
           jvalue val;
-          val.l = (jobject) locals->at(i2)->get_obj()();
+          val.l = cast_from_oop<jobject>(locals->at(i2)->get_obj()());
           cvf->update_local(T_OBJECT, i2, val);
         }
       }
@@ -1547,7 +1549,7 @@ C2V_VMENTRY(void, materializeVirtualObjects, (JNIEnv* env, jobject, jobject _hs_
         StackValue* var = expressions->at(i2);
         if (var->type() == T_OBJECT && scopeExpressions->at(i2)->is_object()) {
           jvalue val;
-          val.l = (jobject) expressions->at(i2)->get_obj()();
+          val.l = cast_from_oop<jobject>(expressions->at(i2)->get_obj()());
           cvf->update_stack(T_OBJECT, i2, val);
         }
       }
@@ -1576,92 +1578,22 @@ C2V_VMENTRY(void, materializeVirtualObjects, (JNIEnv* env, jobject, jobject _hs_
   HotSpotJVMCI::HotSpotStackFrameReference::set_objectsMaterialized(JVMCIENV, hs_frame, JNI_TRUE);
 C2V_END
 
-// Creates a scope where the current thread is attached and detached
-// from HotSpot if it wasn't already attached when entering the scope.
-extern "C" void jio_printf(const char *fmt, ...);
-class AttachDetach : public StackObj {
- public:
-  bool _attached;
-  AttachDetach(JNIEnv* env, Thread* current_thread) {
-    if (current_thread == NULL) {
-      extern struct JavaVM_ main_vm;
-      JNIEnv* hotspotEnv;
-      jint res = main_vm.AttachCurrentThread((void**)&hotspotEnv, NULL);
-      _attached = res == JNI_OK;
-      static volatile int report_attach_error = 0;
-      if (res != JNI_OK && report_attach_error == 0 && Atomic::cmpxchg(&report_attach_error, 0, 1) == 0) {
-        // Only report an attach error once
-        jio_printf("Warning: attaching current thread to VM failed with %d (future attach errors are suppressed)\n", res);
-      }
-    } else {
-      _attached = false;
-    }
-  }
-  ~AttachDetach() {
-    if (_attached && get_current_thread() != NULL) {
-      extern struct JavaVM_ main_vm;
-      jint res = main_vm.DetachCurrentThread();
-      static volatile int report_detach_error = 0;
-      if (res != JNI_OK && report_detach_error == 0 && Atomic::cmpxchg(&report_detach_error, 0, 1) == 0) {
-        // Only report an attach error once
-        jio_printf("Warning: detaching current thread from VM failed with %d (future attach errors are suppressed)\n", res);
-      }
-    }
-  }
-};
-
-C2V_VMENTRY_PREFIX(jint, writeDebugOutput, (JNIEnv* env, jobject, jbyteArray bytes, jint offset, jint length, bool flush, bool can_throw))
-  AttachDetach ad(env, base_thread);
-  bool use_tty = true;
-  if (base_thread == NULL) {
-    if (!ad._attached) {
-      // Can only use tty if the current thread is attached
-      return 0;
-    }
-    base_thread = get_current_thread();
-  }
-  JVMCITraceMark jtm("writeDebugOutput");
-  assert(base_thread->is_Java_thread(), "just checking");
-  JavaThread* thread = (JavaThread*) base_thread;
-  C2V_BLOCK(void, writeDebugOutput, (JNIEnv* env, jobject, jbyteArray bytes, jint offset, jint length))
-  if (bytes == NULL) {
-    if (can_throw) {
-      JVMCI_THROW_0(NullPointerException);
-    }
-    return -1;
-  }
-  JVMCIPrimitiveArray array = JVMCIENV->wrap(bytes);
-
-  // Check if offset and length are non negative.
-  if (offset < 0 || length < 0) {
-    if (can_throw) {
-      JVMCI_THROW_0(ArrayIndexOutOfBoundsException);
-    }
-    return -2;
-  }
-  // Check if the range is valid.
-  int array_length = JVMCIENV->get_length(array);
-  if ((((unsigned int) length + (unsigned int) offset) > (unsigned int) array_length)) {
-    if (can_throw) {
-      JVMCI_THROW_0(ArrayIndexOutOfBoundsException);
-    }
-    return -2;
-  }
-  jbyte buffer[O_BUFLEN];
-  while (length > 0) {
-    int copy_len = MIN2(length, (jint)O_BUFLEN);
-    JVMCIENV->copy_bytes_to(array, buffer, offset, copy_len);
-    tty->write((char*) buffer, copy_len);
-    length -= O_BUFLEN;
-    offset += O_BUFLEN;
+// Use of tty does not require the current thread to be attached to the VM
+// so no need for a full C2V_VMENTRY transition.
+C2V_VMENTRY_PREFIX(void, writeDebugOutput, (JNIEnv* env, jobject, jlong buffer, jint length, bool flush))
+  if (length <= 8) {
+    tty->write((char*) &buffer, length);
+  } else {
+    tty->write((char*) buffer, length);
   }
   if (flush) {
     tty->flush();
   }
-  return 0;
 C2V_END
 
-C2V_VMENTRY(void, flushDebugOutput, (JNIEnv* env, jobject))
+// Use of tty does not require the current thread to be attached to the VM
+// so no need for a full C2V_VMENTRY transition.
+C2V_VMENTRY_PREFIX(void, flushDebugOutput, (JNIEnv* env, jobject))
   tty->flush();
 C2V_END
 
@@ -1771,6 +1703,18 @@ C2V_VMENTRY(void, ensureInitialized, (JNIEnv* env, jobject, jobject jvmci_type))
   }
 C2V_END
 
+C2V_VMENTRY(void, ensureLinked, (JNIEnv* env, jobject, jobject jvmci_type))
+  if (jvmci_type == NULL) {
+    JVMCI_THROW(NullPointerException);
+  }
+
+  Klass* klass = JVMCIENV->asKlass(jvmci_type);
+  if (klass != NULL && klass->is_instance_klass()) {
+    InstanceKlass* k = InstanceKlass::cast(klass);
+    k->link_class(CHECK);
+  }
+C2V_END
+
 C2V_VMENTRY_0(jint, interpreterFrameSize, (JNIEnv* env, jobject, jobject bytecode_frame_handle))
   if (bytecode_frame_handle == NULL) {
     JVMCI_THROW_0(NullPointerException);
@@ -1809,10 +1753,10 @@ C2V_END
 
 C2V_VMENTRY(void, compileToBytecode, (JNIEnv* env, jobject, jobject lambda_form_handle))
   Handle lambda_form = JVMCIENV->asConstant(JVMCIENV->wrap(lambda_form_handle), JVMCI_CHECK);
-  if (lambda_form->is_a(SystemDictionary::LambdaForm_klass())) {
+  if (lambda_form->is_a(vmClasses::LambdaForm_klass())) {
     TempNewSymbol compileToBytecode = SymbolTable::new_symbol("compileToBytecode");
     JavaValue result(T_VOID);
-    JavaCalls::call_special(&result, lambda_form, SystemDictionary::LambdaForm_klass(), compileToBytecode, vmSymbols::void_method_signature(), CHECK);
+    JavaCalls::call_special(&result, lambda_form, vmClasses::LambdaForm_klass(), compileToBytecode, vmSymbols::void_method_signature(), CHECK);
   } else {
     JVMCI_THROW_MSG(IllegalArgumentException,
                     err_msg("Unexpected type: %s", lambda_form->klass()->external_name()))
@@ -1830,7 +1774,7 @@ C2V_VMENTRY_0(jboolean, isInternedString, (JNIEnv* env, jobject, jobject object)
     return false;
   }
   int len;
-  jchar* name = java_lang_String::as_unicode_string(str(), len, CHECK_0);
+  jchar* name = java_lang_String::as_unicode_string(str(), len, CHECK_false);
   return (StringTable::lookup(name, len) != NULL);
 C2V_END
 
@@ -1866,7 +1810,7 @@ C2V_VMENTRY_NULL(jobject, boxPrimitive, (JNIEnv* env, jobject, jobject object))
 #define BOX_CASE(bt, v, argtype, name)           \
   case bt: \
     jargs.push_##argtype(value.v); \
-    box_klass = SystemDictionary::name##_klass(); \
+    box_klass = vmClasses::name##_klass(); \
     box_signature = vmSymbols::name##_valueOf_signature(); \
     break
 
@@ -1987,6 +1931,14 @@ C2V_VMENTRY_NULL(jobject, readFieldValue, (JNIEnv* env, jobject, jobject object,
     JVMCI_THROW_MSG_NULL(IllegalArgumentException,
                          err_msg("Unexpected type: %s", JVMCIENV->klass_name(base)));
   }
+
+  if (displacement == java_lang_Class::component_mirror_offset() && java_lang_Class::is_instance(obj()) &&
+      !java_lang_Class::as_Klass(obj())->is_array_klass()) {
+    // Class.componentType for non-array classes can transiently contain an int[] that's
+    // used for locking so always return null to mimic Class.getComponentType()
+    return JVMCIENV->get_jobject(JVMCIENV->get_JavaConstant_NULL_POINTER());
+  }
+
   jlong value = 0;
   JVMCIObject kind;
   switch (constant_type) {
@@ -2212,6 +2164,13 @@ C2V_VMENTRY_NULL(jobject, getObject, (JNIEnv* env, jobject, jobject x, long disp
     JVMCI_THROW_0(NullPointerException);
   }
   Handle xobj = JVMCIENV->asConstant(JVMCIENV->wrap(x), JVMCI_CHECK_0);
+  if (displacement == java_lang_Class::component_mirror_offset() && java_lang_Class::is_instance(xobj()) &&
+      !java_lang_Class::as_Klass(xobj())->is_array_klass()) {
+    // Class.componentType for non-array classes can transiently contain an int[] that's
+    // used for locking so always return null to mimic Class.getComponentType()
+    return JVMCIENV->get_jobject(JVMCIENV->get_JavaConstant_NULL_POINTER());
+  }
+
   oop res = xobj->obj_field(displacement);
   JVMCIObject result = JVMCIENV->get_object_constant(res);
   return JVMCIENV->get_jobject(result);
@@ -2220,7 +2179,7 @@ C2V_VMENTRY_NULL(jobject, getObject, (JNIEnv* env, jobject, jobject x, long disp
 C2V_VMENTRY(void, deleteGlobalHandle, (JNIEnv* env, jobject, jlong h))
   jobject handle = (jobject)(address)h;
   if (handle != NULL) {
-    JVMCI::destroy_global(handle);
+    JVMCIENV->runtime()->destroy_global(handle);
   }
 }
 
@@ -2230,31 +2189,24 @@ static void requireJVMCINativeLibrary(JVMCI_TRAPS) {
   }
 }
 
-static JavaVM* requireNativeLibraryJavaVM(const char* caller, JVMCI_TRAPS) {
-  JavaVM* javaVM = JVMCIEnv::get_shared_library_javavm();
-  if (javaVM == NULL) {
-    JVMCI_THROW_MSG_NULL(IllegalStateException, err_msg("Require JVMCI shared library to be initialized in %s", caller));
-  }
-  return javaVM;
-}
-
 C2V_VMENTRY_NULL(jlongArray, registerNativeMethods, (JNIEnv* env, jobject, jclass mirror))
   requireJVMCINativeLibrary(JVMCI_CHECK_NULL);
   requireInHotSpot("registerNativeMethods", JVMCI_CHECK_NULL);
-  void* shared_library = JVMCIEnv::get_shared_library_handle();
-  if (shared_library == NULL) {
+  char* sl_path;
+  void* sl_handle;
+  JVMCIRuntime* runtime = JVMCI::compiler_runtime();
+  {
     // Ensure the JVMCI shared library runtime is initialized.
     JVMCIEnv __peer_jvmci_env__(thread, false, __FILE__, __LINE__);
     JVMCIEnv* peerEnv = &__peer_jvmci_env__;
-    HandleMark hm;
-    JVMCIRuntime* runtime = JVMCI::compiler_runtime();
+    HandleMark hm(THREAD);
     JVMCIObject receiver = runtime->get_HotSpotJVMCIRuntime(peerEnv);
     if (peerEnv->has_pending_exception()) {
       peerEnv->describe_pending_exception(true);
     }
-    shared_library = JVMCIEnv::get_shared_library_handle();
-    if (shared_library == NULL) {
-      JVMCI_THROW_MSG_0(InternalError, "Error initializing JVMCI runtime");
+    sl_handle = JVMCI::get_shared_library(sl_path, false);
+    if (sl_handle == NULL) {
+      JVMCI_THROW_MSG_0(InternalError, err_msg("Error initializing JVMCI runtime %d", runtime->id()));
     }
   }
 
@@ -2279,26 +2231,28 @@ C2V_VMENTRY_NULL(jlongArray, registerNativeMethods, (JNIEnv* env, jobject, jclas
       // 1) Try JNI short style
       stringStream st;
       char* pure_name = NativeLookup::pure_jni_name(method);
+      guarantee(pure_name != NULL, "Illegal native method name encountered");
       os::print_jni_name_prefix_on(&st, args_size);
       st.print_raw(pure_name);
       os::print_jni_name_suffix_on(&st, args_size);
       char* jni_name = st.as_string();
 
-      address entry = (address) os::dll_lookup(shared_library, jni_name);
+      address entry = (address) os::dll_lookup(sl_handle, jni_name);
       if (entry == NULL) {
         // 2) Try JNI long style
         st.reset();
         char* long_name = NativeLookup::long_jni_name(method);
+        guarantee(long_name != NULL, "Illegal native method name encountered");
         os::print_jni_name_prefix_on(&st, args_size);
         st.print_raw(pure_name);
         st.print_raw(long_name);
         os::print_jni_name_suffix_on(&st, args_size);
         char* jni_long_name = st.as_string();
-        entry = (address) os::dll_lookup(shared_library, jni_long_name);
+        entry = (address) os::dll_lookup(sl_handle, jni_long_name);
         if (entry == NULL) {
           JVMCI_THROW_MSG_0(UnsatisfiedLinkError, err_msg("%s [neither %s nor %s exist in %s]",
               method->name_and_sig_as_C_string(),
-              jni_name, jni_long_name, JVMCIEnv::get_shared_library_path()));
+              jni_name, jni_long_name, sl_path));
         }
       }
 
@@ -2307,81 +2261,95 @@ C2V_VMENTRY_NULL(jlongArray, registerNativeMethods, (JNIEnv* env, jobject, jclas
             method->name_and_sig_as_C_string(), p2i(method->native_function()), p2i(entry)));
       }
       method->set_native_function(entry, Method::native_bind_event_is_interesting);
-      log_debug(jni, resolve)("[Dynamic-linking native method %s.%s ... JNI]",
+      log_debug(jni, resolve)("[Dynamic-linking native method %s.%s ... JNI] @ " PTR_FORMAT,
                               method->method_holder()->external_name(),
-                              method->name()->as_C_string());
+                              method->name()->as_C_string(),
+                              p2i((void*) entry));
     }
   }
 
-  JavaVM* javaVM = JVMCIEnv::get_shared_library_javavm();
-  JVMCIPrimitiveArray result = JVMCIENV->new_longArray(4, JVMCI_CHECK_NULL);
-  JVMCIENV->put_long_at(result, 0, (jlong) (address) javaVM);
-  JVMCIENV->put_long_at(result, 1, (jlong) (address) javaVM->functions->reserved0);
-  JVMCIENV->put_long_at(result, 2, (jlong) (address) javaVM->functions->reserved1);
-  JVMCIENV->put_long_at(result, 3, (jlong) (address) javaVM->functions->reserved2);
-  return (jlongArray) JVMCIENV->get_jobject(result);
+  typeArrayOop info_oop = oopFactory::new_longArray(4, CHECK_0);
+  jlongArray info = (jlongArray) JNIHandles::make_local(THREAD, info_oop);
+  runtime->init_JavaVM_info(info, JVMCI_CHECK_0);
+  return info;
 }
 
 C2V_VMENTRY_PREFIX(jboolean, isCurrentThreadAttached, (JNIEnv* env, jobject c2vm))
-  if (base_thread == NULL) {
+  if (thread == NULL) {
     // Called from unattached JVMCI shared library thread
     return false;
   }
   JVMCITraceMark jtm("isCurrentThreadAttached");
-  assert(base_thread->is_Java_thread(), "just checking");
-  JavaThread* thread = (JavaThread*) base_thread;
   if (thread->jni_environment() == env) {
     C2V_BLOCK(jboolean, isCurrentThreadAttached, (JNIEnv* env, jobject))
     requireJVMCINativeLibrary(JVMCI_CHECK_0);
-    JavaVM* javaVM = requireNativeLibraryJavaVM("isCurrentThreadAttached", JVMCI_CHECK_0);
+    JVMCIRuntime* runtime = JVMCI::compiler_runtime();
+    if (runtime == NULL || !runtime->has_shared_library_javavm()) {
+      JVMCI_THROW_MSG_0(IllegalStateException, "Require JVMCI shared library JavaVM to be initialized in isCurrentThreadAttached");
+    }
     JNIEnv* peerEnv;
-    return javaVM->GetEnv((void**)&peerEnv, JNI_VERSION_1_2) == JNI_OK;
+    return runtime->GetEnv(thread, (void**) &peerEnv, JNI_VERSION_1_2) == JNI_OK;
   }
   return true;
 C2V_END
 
 C2V_VMENTRY_PREFIX(jlong, getCurrentJavaThread, (JNIEnv* env, jobject c2vm))
-  if (base_thread == NULL) {
+  if (thread == NULL) {
     // Called from unattached JVMCI shared library thread
     return 0L;
   }
   JVMCITraceMark jtm("getCurrentJavaThread");
-  assert(base_thread->is_Java_thread(), "just checking");
-  return (jlong) p2i(base_thread);
+  return (jlong) p2i(thread);
 C2V_END
 
-C2V_VMENTRY_PREFIX(jboolean, attachCurrentThread, (JNIEnv* env, jobject c2vm, jboolean as_daemon))
-  if (base_thread == NULL) {
+C2V_VMENTRY_PREFIX(jboolean, attachCurrentThread, (JNIEnv* env, jobject c2vm, jbyteArray name, jboolean as_daemon))
+  if (thread == NULL) {
     // Called from unattached JVMCI shared library thread
+    guarantee(name != NULL, "libjvmci caller must pass non-null name");
+
     extern struct JavaVM_ main_vm;
     JNIEnv* hotspotEnv;
-    jint res = as_daemon ? main_vm.AttachCurrentThreadAsDaemon((void**)&hotspotEnv, NULL) :
-                           main_vm.AttachCurrentThread((void**)&hotspotEnv, NULL);
+
+    int name_len = env->GetArrayLength(name);
+    char name_buf[64]; // Cannot use Resource heap as it requires a current thread
+    int to_copy = MIN2(name_len, (int) sizeof(name_buf) - 1);
+    env->GetByteArrayRegion(name, 0, to_copy, (jbyte*) name_buf);
+    name_buf[to_copy] = '\0';
+    JavaVMAttachArgs attach_args;
+    attach_args.version = JNI_VERSION_1_2;
+    attach_args.name = name_buf;
+    attach_args.group = NULL;
+    jint res = as_daemon ? main_vm.AttachCurrentThreadAsDaemon((void**) &hotspotEnv, &attach_args) :
+                           main_vm.AttachCurrentThread((void**) &hotspotEnv, &attach_args);
     if (res != JNI_OK) {
       JNI_THROW_("attachCurrentThread", InternalError, err_msg("Trying to attach thread returned %d", res), false);
     }
     return true;
   }
   JVMCITraceMark jtm("attachCurrentThread");
-  assert(base_thread->is_Java_thread(), "just checking");\
-  JavaThread* thread = (JavaThread*) base_thread;
   if (thread->jni_environment() == env) {
     // Called from HotSpot
     C2V_BLOCK(jboolean, attachCurrentThread, (JNIEnv* env, jobject, jboolean))
     requireJVMCINativeLibrary(JVMCI_CHECK_0);
-    JavaVM* javaVM = requireNativeLibraryJavaVM("attachCurrentThread", JVMCI_CHECK_0);
+    JVMCIRuntime* runtime = JVMCI::compiler_runtime();
+    if (runtime == NULL || !runtime->has_shared_library_javavm()) {
+        JVMCI_THROW_MSG_0(IllegalStateException, "Require JVMCI shared library JavaVM to be initialized in attachCurrentThread");
+    }
+
     JavaVMAttachArgs attach_args;
     attach_args.version = JNI_VERSION_1_2;
     attach_args.name = thread->name();
     attach_args.group = NULL;
-    JNIEnv* peerEnv;
-    if (javaVM->GetEnv((void**)&peerEnv, JNI_VERSION_1_2) == JNI_OK) {
+    JNIEnv* peerJNIEnv;
+    if (runtime->GetEnv(thread, (void**) &peerJNIEnv, JNI_VERSION_1_2) == JNI_OK) {
       return false;
     }
-    jint res = as_daemon ? javaVM->AttachCurrentThreadAsDaemon((void**)&peerEnv, &attach_args) :
-                           javaVM->AttachCurrentThread((void**)&peerEnv, &attach_args);
+    jint res = as_daemon ? runtime->AttachCurrentThreadAsDaemon(thread, (void**) &peerJNIEnv, &attach_args) :
+                           runtime->AttachCurrentThread(thread, (void**) &peerJNIEnv, &attach_args);
+
     if (res == JNI_OK) {
-      guarantee(peerEnv != NULL, "must be");
+      guarantee(peerJNIEnv != NULL, "must be");
+      JVMCI_event_1("attached to JavaVM for JVMCI runtime %d", runtime->id());
       return true;
     }
     JVMCI_THROW_MSG_0(InternalError, err_msg("Error %d while attaching %s", res, attach_args.name));
@@ -2391,24 +2359,25 @@ C2V_VMENTRY_PREFIX(jboolean, attachCurrentThread, (JNIEnv* env, jobject c2vm, jb
 C2V_END
 
 C2V_VMENTRY_PREFIX(void, detachCurrentThread, (JNIEnv* env, jobject c2vm))
-  if (base_thread == NULL) {
+  if (thread == NULL) {
     // Called from unattached JVMCI shared library thread
-    JNI_THROW("detachCurrentThread", IllegalStateException, err_msg("Cannot detach non-attached thread"));
+    JNI_THROW("detachCurrentThread", IllegalStateException, "Cannot detach non-attached thread");
   }
   JVMCITraceMark jtm("detachCurrentThread");
-  assert(base_thread->is_Java_thread(), "just checking");\
-  JavaThread* thread = (JavaThread*) base_thread;
   if (thread->jni_environment() == env) {
     // Called from HotSpot
     C2V_BLOCK(void, detachCurrentThread, (JNIEnv* env, jobject))
     requireJVMCINativeLibrary(JVMCI_CHECK);
     requireInHotSpot("detachCurrentThread", JVMCI_CHECK);
-    JavaVM* javaVM = requireNativeLibraryJavaVM("detachCurrentThread", JVMCI_CHECK);
-    JNIEnv* peerEnv;
-    if (javaVM->GetEnv((void**)&peerEnv, JNI_VERSION_1_2) != JNI_OK) {
+    JVMCIRuntime* runtime = JVMCI::compiler_runtime();
+    if (runtime == NULL || !runtime->has_shared_library_javavm()) {
+      JVMCI_THROW_MSG(IllegalStateException, "Require JVMCI shared library JavaVM to be initialized in detachCurrentThread");
+    }
+    JNIEnv* peerJNIEnv;
+    if (runtime->GetEnv(thread, (void**) &peerJNIEnv, JNI_VERSION_1_2) != JNI_OK) {
       JVMCI_THROW_MSG(IllegalStateException, err_msg("Cannot detach non-attached thread: %s", thread->name()));
     }
-    jint res = javaVM->DetachCurrentThread();
+    jint res = runtime->DetachCurrentThread(thread);
     if (res != JNI_OK) {
       JVMCI_THROW_MSG(InternalError, err_msg("Error %d while attaching %s", res, thread->name()));
     }
@@ -2417,7 +2386,7 @@ C2V_VMENTRY_PREFIX(void, detachCurrentThread, (JNIEnv* env, jobject c2vm))
     extern struct JavaVM_ main_vm;
     jint res = main_vm.DetachCurrentThread();
     if (res != JNI_OK) {
-      JNI_THROW("detachCurrentThread", InternalError, err_msg("Cannot detach non-attached thread"));
+      JNI_THROW("detachCurrentThread", InternalError, "Cannot detach non-attached thread");
     }
   }
 C2V_END
@@ -2563,7 +2532,7 @@ C2V_VMENTRY_NULL(jobject, asReflectionField, (JNIEnv* env, jobject, jobject jvmc
   }
   fieldDescriptor fd(iklass, index);
   oop reflected = Reflection::new_field(&fd, CHECK_NULL);
-  return JNIHandles::make_local(env, reflected);
+  return JNIHandles::make_local(THREAD, reflected);
 }
 
 C2V_VMENTRY_NULL(jobjectArray, getFailedSpeculations, (JNIEnv* env, jobject, jlong failed_speculations_address, jobjectArray current))
@@ -2626,11 +2595,42 @@ C2V_VMENTRY(void, callSystemExit, (JNIEnv* env, jobject, jint status))
   JavaCallArguments jargs(1);
   jargs.push_int(status);
   JavaCalls::call_static(&result,
-                       SystemDictionary::System_klass(),
+                       vmClasses::System_klass(),
                        vmSymbols::exit_method_name(),
                        vmSymbols::int_void_signature(),
                        &jargs,
                        CHECK);
+}
+
+C2V_VMENTRY_0(jlong, ticksNow, (JNIEnv* env, jobject))
+  return CompilerEvent::ticksNow();
+}
+
+C2V_VMENTRY_0(jint, registerCompilerPhase, (JNIEnv* env, jobject, jstring jphase_name))
+#if INCLUDE_JFR
+  JVMCIObject phase_name = JVMCIENV->wrap(jphase_name);
+  const char *name = JVMCIENV->as_utf8_string(phase_name);
+  return CompilerEvent::PhaseEvent::get_phase_id(name, true, true, true);
+#else
+  return -1;
+#endif // !INCLUDE_JFR
+}
+
+C2V_VMENTRY(void, notifyCompilerPhaseEvent, (JNIEnv* env, jobject, jlong startTime, jint phase, jint compileId, jint level))
+  EventCompilerPhase event;
+  if (event.should_commit()) {
+    CompilerEvent::PhaseEvent::post(event, startTime, phase, compileId, level);
+  }
+}
+
+C2V_VMENTRY(void, notifyCompilerInliningEvent, (JNIEnv* env, jobject, jint compileId, jobject caller, jobject callee, jboolean succeeded, jstring jmessage, jint bci))
+  EventCompilerInlining event;
+  if (event.should_commit()) {
+    Method* caller_method = JVMCIENV->asMethod(caller);
+    Method* callee_method = JVMCIENV->asMethod(callee);
+    JVMCIObject message = JVMCIENV->wrap(jmessage);
+    CompilerEvent::InlineEvent::post(event, compileId, caller_method, callee_method, succeeded, JVMCIENV->as_utf8_string(message), bci);
+  }
 }
 
 #define CC (char*)  /*cast a literal from (const char*)*/
@@ -2719,7 +2719,7 @@ JNINativeMethod CompilerToVM::methods[] = {
   {CC "readUncompressedOop",                          CC "(J)" OBJECTCONSTANT,                                                              FN_PTR(readUncompressedOop)},
   {CC "collectCounters",                              CC "()[J",                                                                            FN_PTR(collectCounters)},
   {CC "getCountersSize",                              CC "()I",                                                                             FN_PTR(getCountersSize)},
-  {CC "setCountersSize",                              CC "(I)V",                                                                            FN_PTR(setCountersSize)},
+  {CC "setCountersSize",                              CC "(I)Z",                                                                            FN_PTR(setCountersSize)},
   {CC "allocateCompileId",                            CC "(" HS_RESOLVED_METHOD "I)I",                                                      FN_PTR(allocateCompileId)},
   {CC "isMature",                                     CC "(" METASPACE_METHOD_DATA ")Z",                                                    FN_PTR(isMature)},
   {CC "hasCompiledCodeForOSR",                        CC "(" HS_RESOLVED_METHOD "II)Z",                                                     FN_PTR(hasCompiledCodeForOSR)},
@@ -2727,7 +2727,7 @@ JNINativeMethod CompilerToVM::methods[] = {
   {CC "iterateFrames",                                CC "([" RESOLVED_METHOD "[" RESOLVED_METHOD "I" INSPECTED_FRAME_VISITOR ")" OBJECT,   FN_PTR(iterateFrames)},
   {CC "materializeVirtualObjects",                    CC "(" HS_STACK_FRAME_REF "Z)V",                                                      FN_PTR(materializeVirtualObjects)},
   {CC "shouldDebugNonSafepoints",                     CC "()Z",                                                                             FN_PTR(shouldDebugNonSafepoints)},
-  {CC "writeDebugOutput",                             CC "([BIIZZ)I",                                                                       FN_PTR(writeDebugOutput)},
+  {CC "writeDebugOutput",                             CC "(JIZ)V",                                                                          FN_PTR(writeDebugOutput)},
   {CC "flushDebugOutput",                             CC "()V",                                                                             FN_PTR(flushDebugOutput)},
   {CC "methodDataProfileDataSize",                    CC "(JI)I",                                                                           FN_PTR(methodDataProfileDataSize)},
   {CC "getFingerprint",                               CC "(J)J",                                                                            FN_PTR(getFingerprint)},
@@ -2739,6 +2739,7 @@ JNINativeMethod CompilerToVM::methods[] = {
   {CC "getInterfaces",                                CC "(" HS_RESOLVED_KLASS ")[" HS_RESOLVED_KLASS,                                      FN_PTR(getInterfaces)},
   {CC "getComponentType",                             CC "(" HS_RESOLVED_KLASS ")" HS_RESOLVED_TYPE,                                        FN_PTR(getComponentType)},
   {CC "ensureInitialized",                            CC "(" HS_RESOLVED_KLASS ")V",                                                        FN_PTR(ensureInitialized)},
+  {CC "ensureLinked",                                 CC "(" HS_RESOLVED_KLASS ")V",                                                        FN_PTR(ensureLinked)},
   {CC "getIdentityHashCode",                          CC "(" OBJECTCONSTANT ")I",                                                           FN_PTR(getIdentityHashCode)},
   {CC "isInternedString",                             CC "(" OBJECTCONSTANT ")Z",                                                           FN_PTR(isInternedString)},
   {CC "unboxPrimitive",                               CC "(" OBJECTCONSTANT ")" OBJECT,                                                     FN_PTR(unboxPrimitive)},
@@ -2767,7 +2768,7 @@ JNINativeMethod CompilerToVM::methods[] = {
   {CC "registerNativeMethods",                        CC "(" CLASS ")[J",                                                                   FN_PTR(registerNativeMethods)},
   {CC "isCurrentThreadAttached",                      CC "()Z",                                                                             FN_PTR(isCurrentThreadAttached)},
   {CC "getCurrentJavaThread",                         CC "()J",                                                                             FN_PTR(getCurrentJavaThread)},
-  {CC "attachCurrentThread",                          CC "(Z)Z",                                                                            FN_PTR(attachCurrentThread)},
+  {CC "attachCurrentThread",                          CC "([BZ)Z",                                                                          FN_PTR(attachCurrentThread)},
   {CC "detachCurrentThread",                          CC "()V",                                                                             FN_PTR(detachCurrentThread)},
   {CC "translate",                                    CC "(" OBJECT ")J",                                                                   FN_PTR(translate)},
   {CC "unhand",                                       CC "(J)" OBJECT,                                                                      FN_PTR(unhand)},
@@ -2780,6 +2781,10 @@ JNINativeMethod CompilerToVM::methods[] = {
   {CC "releaseFailedSpeculations",                    CC "(J)V",                                                                            FN_PTR(releaseFailedSpeculations)},
   {CC "addFailedSpeculation",                         CC "(J[B)Z",                                                                          FN_PTR(addFailedSpeculation)},
   {CC "callSystemExit",                               CC "(I)V",                                                                            FN_PTR(callSystemExit)},
+  {CC "ticksNow",                                     CC "()J",                                                                             FN_PTR(ticksNow)},
+  {CC "registerCompilerPhase",                        CC "(" STRING ")I",                                                                   FN_PTR(registerCompilerPhase)},
+  {CC "notifyCompilerPhaseEvent",                     CC "(JIII)V",                                                                         FN_PTR(notifyCompilerPhaseEvent)},
+  {CC "notifyCompilerInliningEvent",                  CC "(I" HS_RESOLVED_METHOD HS_RESOLVED_METHOD "ZLjava/lang/String;I)V",               FN_PTR(notifyCompilerInliningEvent)},
 };
 
 int CompilerToVM::methods_count() {

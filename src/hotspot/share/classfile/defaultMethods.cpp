@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2012, 2019, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2012, 2021, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -27,12 +27,16 @@
 #include "classfile/defaultMethods.hpp"
 #include "classfile/symbolTable.hpp"
 #include "classfile/systemDictionary.hpp"
+#include "classfile/vmClasses.hpp"
+#include "classfile/vmSymbols.hpp"
 #include "logging/log.hpp"
 #include "logging/logStream.hpp"
 #include "memory/allocation.hpp"
 #include "memory/metadataFactory.hpp"
 #include "memory/resourceArea.hpp"
 #include "memory/universe.hpp"
+#include "prims/jvmtiExport.hpp"
+#include "runtime/arguments.hpp"
 #include "runtime/handles.inline.hpp"
 #include "runtime/signature.hpp"
 #include "runtime/thread.hpp"
@@ -137,7 +141,7 @@ class HierarchyVisitor : StackObj {
   bool has_more_nodes() const { return _path.length() > 0; }
   void push(InstanceKlass* cls, ALGO* algo) {
     assert(cls != NULL, "Requires a valid instance class");
-    if (cls == SystemDictionary::Object_klass()) {
+    if (cls == vmClasses::Object_klass()) {
       _visited_Object = true;
     }
     void* data = algo->new_node_data();
@@ -814,7 +818,7 @@ static void create_default_methods( InstanceKlass* klass,
 void DefaultMethods::generate_default_methods(
     InstanceKlass* klass, const GrowableArray<Method*>* mirandas, TRAPS) {
   assert(klass != NULL, "invariant");
-  assert(klass != SystemDictionary::Object_klass(), "Shouldn't be called for Object");
+  assert(klass != vmClasses::Object_klass(), "Shouldn't be called for Object");
 
   // This resource mark is the bound for all memory allocation that takes
   // place during default method processing.  After this goes out of scope,
@@ -901,8 +905,7 @@ static Method* new_method(
   m->set_constants(NULL); // This will get filled in later
   m->set_name_index(cp->utf8(name));
   m->set_signature_index(cp->utf8(sig));
-  ResultTypeFinder rtf(sig);
-  m->constMethod()->set_result_type(rtf.type());
+  m->compute_from_signature(sig);
   m->set_size_of_parameters(params);
   m->set_max_stack(max_stack);
   m->set_max_locals(params);
@@ -919,7 +922,7 @@ static void switchover_constant_pool(BytecodeConstantPool* bpool,
     ConstantPool* cp = bpool->create_constant_pool(CHECK);
     if (cp != klass->constants()) {
       // Copy resolved anonymous class into new constant pool.
-      if (klass->is_unsafe_anonymous()) {
+      if (klass->is_unsafe_anonymous() || klass->is_hidden()) {
         cp->klass_at_put(klass->this_class_index(), klass);
       }
       klass->class_loader_data()->add_to_deallocate_list(klass->constants());

@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2015, 2019, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2015, 2020, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -27,12 +27,10 @@
 #include "gc/z/zAddress.inline.hpp"
 #include "gc/z/zGlobals.hpp"
 #include "gc/z/zLiveMap.inline.hpp"
-#include "gc/z/zMark.hpp"
 #include "gc/z/zNUMA.hpp"
 #include "gc/z/zPage.hpp"
 #include "gc/z/zPhysicalMemory.inline.hpp"
 #include "gc/z/zVirtualMemory.inline.hpp"
-#include "oops/oop.inline.hpp"
 #include "runtime/atomic.hpp"
 #include "runtime/os.hpp"
 #include "utilities/align.hpp"
@@ -126,17 +124,21 @@ inline size_t ZPage::remaining() const {
   return end() - top();
 }
 
-inline const ZPhysicalMemory& ZPage::physical_memory() const {
-  return _physical;
-}
-
 inline const ZVirtualMemory& ZPage::virtual_memory() const {
   return _virtual;
 }
 
+inline const ZPhysicalMemory& ZPage::physical_memory() const {
+  return _physical;
+}
+
+inline ZPhysicalMemory& ZPage::physical_memory() {
+  return _physical;
+}
+
 inline uint8_t ZPage::numa_id() {
   if (_numa_id == (uint8_t)-1) {
-    _numa_id = (uint8_t)ZNUMA::memory_id(ZAddress::good(start()));
+    _numa_id = ZNUMA::memory_id(ZAddress::good(start()));
   }
 
   return _numa_id;
@@ -150,23 +152,12 @@ inline bool ZPage::is_relocatable() const {
   return _seqnum < ZGlobalSeqNum;
 }
 
-inline bool ZPage::is_mapped() const {
-  return _seqnum > 0;
-}
-
-inline void ZPage::set_pre_mapped() {
-  // The _seqnum variable is also used to signal that the virtual and physical
-  // memory has been mapped. So, we need to set it to non-zero when the memory
-  // has been pre-mapped.
-  _seqnum = 1;
-}
-
 inline uint64_t ZPage::last_used() const {
   return _last_used;
 }
 
 inline void ZPage::set_last_used() {
-  _last_used = os::elapsedTime();
+  _last_used = ceil(os::elapsedTime());
 }
 
 inline bool ZPage::is_in(uintptr_t addr) const {

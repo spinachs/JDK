@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2002, 2017, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2002, 2020, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -25,12 +25,21 @@
 
 package com.sun.crypto.provider;
 
-import java.security.*;
-import java.security.spec.*;
-import javax.crypto.*;
-import javax.crypto.spec.*;
 import javax.crypto.BadPaddingException;
+import javax.crypto.CipherSpi;
+import javax.crypto.IllegalBlockSizeException;
+import javax.crypto.NoSuchPaddingException;
+import javax.crypto.ShortBufferException;
 import java.nio.ByteBuffer;
+import java.security.AlgorithmParameters;
+import java.security.GeneralSecurityException;
+import java.security.InvalidAlgorithmParameterException;
+import java.security.InvalidKeyException;
+import java.security.Key;
+import java.security.NoSuchAlgorithmException;
+import java.security.ProviderException;
+import java.security.SecureRandom;
+import java.security.spec.AlgorithmParameterSpec;
 
 /**
  * This class implements the AES algorithm in its various modes
@@ -202,7 +211,7 @@ abstract class AESCipher extends CipherSpi {
     /**
      * Sets the padding mechanism of this cipher.
      *
-     * @param padding the padding mechanism
+     * @param paddingScheme the padding mechanism
      *
      * @exception NoSuchPaddingException if the requested padding mechanism
      * does not exist
@@ -410,6 +419,7 @@ abstract class AESCipher extends CipherSpi {
         return core.update(input, inputOffset, inputLen, output,
                            outputOffset);
     }
+
 
     /**
      * Encrypts or decrypts data in a single-part operation,
@@ -641,5 +651,26 @@ abstract class AESCipher extends CipherSpi {
             }
         }
     }
-}
 
+    /**
+     * Finalize crypto operation with ByteBuffers
+     *
+     * @param input the input ByteBuffer
+     * @param output the output ByteBuffer
+     *
+     * @return output length
+     * @throws ShortBufferException
+     * @throws IllegalBlockSizeException
+     * @throws BadPaddingException
+     */
+    @Override
+    protected int engineDoFinal(ByteBuffer input, ByteBuffer output)
+        throws ShortBufferException, IllegalBlockSizeException,
+        BadPaddingException {
+        if (core.getMode() == CipherCore.GCM_MODE && !input.hasArray()) {
+            return core.gcmDoFinal(input, output);
+        } else {
+            return super.engineDoFinal(input, output);
+        }
+    }
+}

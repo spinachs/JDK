@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2015, 2019, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2015, 2020, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -137,6 +137,15 @@ final class CertificateMessage {
                     byte[] encodedCert = Record.getBytes24(m);
                     listLen -= (3 + encodedCert.length);
                     encodedCerts.add(encodedCert);
+                    if (encodedCerts.size() > SSLConfiguration.maxCertificateChainLength) {
+                        throw new SSLProtocolException(
+                                "The certificate chain length ("
+                                + encodedCerts.size()
+                                + ") exceeds the maximum allowed length ("
+                                + SSLConfiguration.maxCertificateChainLength
+                                + ")");
+                    }
+
                 }
                 this.encodedCertChain = encodedCerts;
             } else {
@@ -371,6 +380,10 @@ final class CertificateMessage {
                 T12CertificateMessage certificateMessage )throws IOException {
             List<byte[]> encodedCerts = certificateMessage.encodedCertChain;
             if (encodedCerts == null || encodedCerts.isEmpty()) {
+                // For empty Certificate messages, we should not expect
+                // a CertificateVerify message to follow
+                shc.handshakeConsumers.remove(
+                        SSLHandshake.CERTIFICATE_VERIFY.id);
                 if (shc.sslConfig.clientAuthType !=
                         ClientAuthType.CLIENT_AUTH_REQUESTED) {
                     // unexpected or require client authentication
@@ -855,6 +868,14 @@ final class CertificateMessage {
                 SSLExtensions extensions =
                         new SSLExtensions(this, m, enabledExtensions);
                 certList.add(new CertificateEntry(encodedCert, extensions));
+                if (certList.size() > SSLConfiguration.maxCertificateChainLength) {
+                    throw new SSLProtocolException(
+                            "The certificate chain length ("
+                            + certList.size()
+                            + ") exceeds the maximum allowed length ("
+                            + SSLConfiguration.maxCertificateChainLength
+                            + ")");
+                }
             }
 
             this.certEntries = Collections.unmodifiableList(certList);
@@ -1165,6 +1186,10 @@ final class CertificateMessage {
                 T13CertificateMessage certificateMessage )throws IOException {
             if (certificateMessage.certEntries == null ||
                     certificateMessage.certEntries.isEmpty()) {
+                // For empty Certificate messages, we should not expect
+                // a CertificateVerify message to follow
+                shc.handshakeConsumers.remove(
+                        SSLHandshake.CERTIFICATE_VERIFY.id);
                 if (shc.sslConfig.clientAuthType == CLIENT_AUTH_REQUIRED) {
                     throw shc.conContext.fatal(Alert.BAD_CERTIFICATE,
                         "Empty client certificate chain");

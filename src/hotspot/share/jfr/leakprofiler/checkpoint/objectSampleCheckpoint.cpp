@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2014, 2019, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2014, 2020, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -24,6 +24,7 @@
 
 #include "precompiled.hpp"
 #include "jfr/jfrEvents.hpp"
+#include "jfr/jni/jfrJavaSupport.hpp"
 #include "jfr/leakprofiler/chains/edgeStore.hpp"
 #include "jfr/leakprofiler/chains/objectSampleMarker.hpp"
 #include "jfr/leakprofiler/checkpoint/objectSampleCheckpoint.hpp"
@@ -35,40 +36,23 @@
 #include "jfr/recorder/checkpoint/types/traceid/jfrTraceId.inline.hpp"
 #include "jfr/recorder/service/jfrOptionSet.hpp"
 #include "jfr/recorder/stacktrace/jfrStackTraceRepository.hpp"
+#include "jfr/support/jfrKlassUnloading.hpp"
+#include "jfr/support/jfrMethodLookup.hpp"
 #include "jfr/utilities/jfrHashtable.hpp"
-#include "jfr/utilities/jfrTypes.hpp"
+#include "jfr/utilities/jfrPredicate.hpp"
+#include "jfr/utilities/jfrRelation.hpp"
+#include "memory/resourceArea.inline.hpp"
+#include "oops/instanceKlass.inline.hpp"
+#include "runtime/interfaceSupport.inline.hpp"
 #include "runtime/mutexLocker.hpp"
 #include "runtime/safepoint.hpp"
-#include "runtime/thread.hpp"
-#include "utilities/growableArray.hpp"
-
-static bool predicate(GrowableArray<traceid>* set, traceid id) {
-  assert(set != NULL, "invariant");
-  bool found = false;
-  set->find_sorted<traceid, compare_traceid>(id, found);
-  return found;
-}
-
-static bool mutable_predicate(GrowableArray<traceid>* set, traceid id) {
-  assert(set != NULL, "invariant");
-  bool found = false;
-  const int location = set->find_sorted<traceid, compare_traceid>(id, found);
-  if (!found) {
-    set->insert_before(location, id);
-  }
-  return found;
-}
-
-static bool add(GrowableArray<traceid>* set, traceid id) {
-  assert(set != NULL, "invariant");
-  return mutable_predicate(set, id);
-}
+#include "runtime/thread.inline.hpp"
 
 const int initial_array_size = 64;
 
 template <typename T>
 static GrowableArray<T>* c_heap_allocate_array(int size = initial_array_size) {
-  return new (ResourceObj::C_HEAP, mtTracing) GrowableArray<T>(size, true, mtTracing);
+  return new (ResourceObj::C_HEAP, mtTracing) GrowableArray<T>(size, mtTracing);
 }
 
 static GrowableArray<traceid>* unloaded_thread_id_set = NULL;
@@ -85,7 +69,12 @@ Semaphore ThreadIdExclusiveAccess::_mutex_semaphore(1);
 
 static bool has_thread_exited(traceid tid) {
   assert(tid != 0, "invariant");
-  return unloaded_thread_id_set != NULL && predicate(unloaded_thread_id_set, tid);
+  return unloaded_thread_id_set != NULL && JfrPredicate<traceid, compare_traceid>::test(unloaded_thread_id_set, tid);
+}
+
+static bool add(GrowableArray<traceid>* set, traceid id) {
+  assert(set != NULL, "invariant");
+  return JfrMutablePredicate<traceid, compare_traceid>::test(set, id);
 }
 
 static void add_to_unloaded_thread_set(traceid tid) {
@@ -101,28 +90,6 @@ void ObjectSampleCheckpoint::on_thread_exit(JavaThread* jt) {
   if (LeakProfiler::is_running()) {
     add_to_unloaded_thread_set(jt->jfr_thread_local()->thread_id());
   }
-}
-
-// Track the set of unloaded klasses during a chunk / epoch.
-// Methods in stacktraces belonging to unloaded klasses must not be accessed.
-static GrowableArray<traceid>* unloaded_klass_set = NULL;
-
-static void add_to_unloaded_klass_set(traceid klass_id) {
-  if (unloaded_klass_set == NULL) {
-    unloaded_klass_set = c_heap_allocate_array<traceid>();
-  }
-  unloaded_klass_set->append(klass_id);
-}
-
-static void sort_unloaded_klass_set() {
-  if (unloaded_klass_set != NULL && unloaded_klass_set->length() > 1) {
-    unloaded_klass_set->sort(sort_traceid);
-  }
-}
-
-void ObjectSampleCheckpoint::on_klass_unload(const Klass* k) {
-  assert(k != NULL, "invariant");
-  add_to_unloaded_klass_set(TRACE_ID(k));
 }
 
 template <typename Processor>
@@ -166,7 +133,7 @@ int ObjectSampleCheckpoint::save_mark_words(const ObjectSampler* sampler, Object
   if (sampler->last() == NULL) {
     return 0;
   }
-  SampleMarker sample_marker(marker, emit_all ? max_jlong : sampler->last_sweep().value());
+  SampleMarker sample_marker(marker, emit_all ? max_jlong : ObjectSampler::last_sweep());
   iterate_samples(sample_marker, true);
   return sample_marker.count();
 }
@@ -223,7 +190,6 @@ static GrowableArray<traceid>* id_set = NULL;
 
 static void prepare_for_resolution() {
   id_set = new GrowableArray<traceid>(JfrOptionSet::old_object_queue_size());
-  sort_unloaded_klass_set();
 }
 
 static bool stack_trace_precondition(const ObjectSample* sample) {
@@ -285,39 +251,45 @@ static void install_stack_traces(const ObjectSampler* sampler, JfrStackTraceRepo
   assert(sampler != NULL, "invariant");
   const ObjectSample* const last = sampler->last();
   if (last != sampler->last_resolved()) {
+    ResourceMark rm;
+    JfrKlassUnloading::sort();
     StackTraceBlobInstaller installer(stack_trace_repo);
     iterate_samples(installer);
   }
 }
 
-// caller needs ResourceMark
 void ObjectSampleCheckpoint::on_rotation(const ObjectSampler* sampler, JfrStackTraceRepository& stack_trace_repo) {
-  assert(JfrStream_lock->owned_by_self(), "invariant");
   assert(sampler != NULL, "invariant");
   assert(LeakProfiler::is_running(), "invariant");
+  JavaThread* const thread = JavaThread::current();
+  DEBUG_ONLY(JfrJavaSupport::check_java_thread_in_native(thread);)
+  // can safepoint here
+  ThreadInVMfromNative transition(thread);
+  MutexLocker lock(ClassLoaderDataGraph_lock);
+  // the lock is needed to ensure the unload lists do not grow in the middle of inspection.
   install_stack_traces(sampler, stack_trace_repo);
 }
 
-static traceid get_klass_id(traceid method_id) {
+static bool is_klass_unloaded(traceid klass_id) {
+  assert(ClassLoaderDataGraph_lock->owned_by_self(), "invariant");
+  return JfrKlassUnloading::is_unloaded(klass_id);
+}
+
+static bool is_processed(traceid method_id) {
   assert(method_id != 0, "invariant");
-  return method_id >> TRACE_ID_SHIFT;
-}
-
-static bool is_klass_unloaded(traceid method_id) {
-  return unloaded_klass_set != NULL && predicate(unloaded_klass_set, get_klass_id(method_id));
-}
-
-static bool is_processed(traceid id) {
-  assert(id != 0, "invariant");
   assert(id_set != NULL, "invariant");
-  return mutable_predicate(id_set, id);
+  return JfrMutablePredicate<traceid, compare_traceid>::test(id_set, method_id);
 }
 
-void ObjectSampleCheckpoint::add_to_leakp_set(const Method* method, traceid method_id) {
-  if (is_processed(method_id) || is_klass_unloaded(method_id)) {
+void ObjectSampleCheckpoint::add_to_leakp_set(const InstanceKlass* ik, traceid method_id) {
+  assert(ik != NULL, "invariant");
+  if (is_processed(method_id) || is_klass_unloaded(JfrMethodLookup::klass_id(method_id))) {
     return;
   }
-  JfrTraceId::set_leakp(method);
+  const Method* const method = JfrMethodLookup::lookup(ik, method_id);
+  assert(method != NULL, "invariant");
+  assert(method->method_holder() == ik, "invariant");
+  JfrTraceId::load_leakp(ik, method);
 }
 
 void ObjectSampleCheckpoint::write_stacktrace(const JfrStackTrace* trace, JfrCheckpointWriter& writer) {
@@ -330,7 +302,7 @@ void ObjectSampleCheckpoint::write_stacktrace(const JfrStackTrace* trace, JfrChe
   for (u4 i = 0; i < trace->_nr_of_frames; ++i) {
     const JfrStackFrame& frame = trace->_frames[i];
     frame.write(writer);
-    add_to_leakp_set(frame._method, frame._methodid);
+    add_to_leakp_set(frame._klass, frame._methodid);
   }
 }
 
@@ -389,7 +361,7 @@ class BlobWriter {
 
 static void write_sample_blobs(const ObjectSampler* sampler, bool emit_all, Thread* thread) {
   // sample set is predicated on time of last sweep
-  const jlong last_sweep = emit_all ? max_jlong : sampler->last_sweep().value();
+  const jlong last_sweep = emit_all ? max_jlong : ObjectSampler::last_sweep();
   JfrCheckpointWriter writer(thread, false);
   BlobWriter cbw(sampler, writer, last_sweep);
   iterate_samples(cbw, true);
@@ -399,7 +371,6 @@ static void write_sample_blobs(const ObjectSampler* sampler, bool emit_all, Thre
 }
 
 void ObjectSampleCheckpoint::write(const ObjectSampler* sampler, EdgeStore* edge_store, bool emit_all, Thread* thread) {
-  assert_locked_or_safepoint(JfrStream_lock);
   assert(sampler != NULL, "invariant");
   assert(edge_store != NULL, "invariant");
   assert(thread != NULL, "invariant");
@@ -412,12 +383,6 @@ void ObjectSampleCheckpoint::write(const ObjectSampler* sampler, EdgeStore* edge
   }
 }
 
-static void clear_unloaded_klass_set() {
-  if (unloaded_klass_set != NULL && unloaded_klass_set->is_nonempty()) {
-    unloaded_klass_set->clear();
-  }
-}
-
 // A linked list of saved type set blobs for the epoch.
 // The link consist of a reference counted handle.
 static JfrBlobHandle saved_type_set_blobs;
@@ -425,7 +390,6 @@ static JfrBlobHandle saved_type_set_blobs;
 static void release_state_for_previous_epoch() {
   // decrements the reference count and the list is reinitialized
   saved_type_set_blobs = JfrBlobHandle();
-  clear_unloaded_klass_set();
 }
 
 class BlobInstaller {
@@ -457,6 +421,7 @@ static void save_type_set_blob(JfrCheckpointWriter& writer, bool copy = false) {
 
 void ObjectSampleCheckpoint::on_type_set(JfrCheckpointWriter& writer) {
   assert(LeakProfiler::is_running(), "invariant");
+  DEBUG_ONLY(JfrJavaSupport::check_java_thread_in_vm(Thread::current());)
   const ObjectSample* last = ObjectSampler::sampler()->last();
   if (writer.has_data() && last != NULL) {
     save_type_set_blob(writer);
